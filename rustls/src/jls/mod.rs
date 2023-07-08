@@ -11,8 +11,11 @@ use aes_gcm::{
 
 
 #[derive(Clone)]
+/// JLS Configuration
 pub struct JlsConfig {
+    /// user password of a JLS peer
     pub user_pwd: String,
+    /// user iv for a JLS peer
     pub user_iv: String,
 }
 
@@ -26,6 +29,15 @@ impl Default for JlsConfig {
 }
 
 impl JlsConfig {
+    /// Create a new JlsConfig
+    pub fn new(user_pwd: &str, user_iv: &str) -> JlsConfig{
+        JlsConfig{
+            user_pwd: String::from(user_pwd),
+            user_iv: String::from(user_iv),
+        }
+    }
+
+    /// Build a fake random from a true random with given keyshare
     pub fn build_fake_random(&self, random: &[u8;16], keyshare: &[u8]) -> [u8;32] {
         let mut iv = self.user_iv.as_bytes().to_vec();
         iv.extend_from_slice(keyshare);
@@ -44,6 +56,7 @@ impl JlsConfig {
         buffer.try_into().unwrap()
     }
     
+    /// Check if it's a valid fake random 
     pub fn check_fake_random(&self,fake_random: &[u8;32], keyshare: &[u8]) -> bool {
         let mut iv = self.user_iv.as_bytes().to_vec();
         iv.extend_from_slice(keyshare);
