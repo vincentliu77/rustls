@@ -17,6 +17,7 @@ use crate::versions;
 #[cfg(feature = "secret_extraction")]
 use crate::ExtractedSecrets;
 use crate::KeyLog;
+use crate::jls::JlsConfig;
 
 use super::handy::{ClientSessionMemoryCache, NoClientSessionStorage};
 use super::hs;
@@ -180,6 +181,9 @@ pub struct ClientConfig {
     ///
     /// The default is false.
     pub enable_early_data: bool,
+
+    /// JLS Client Configuration
+    pub jls_config: JlsConfig,
 }
 
 /// What mechanisms to support for resuming a TLS 1.2 session.

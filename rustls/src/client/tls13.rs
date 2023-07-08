@@ -46,6 +46,8 @@ use ring::constant_time;
 use crate::sign::{CertifiedKey, Signer};
 use std::sync::Arc;
 
+use crate::jls;
+
 // Extensions we expect in plaintext in the ServerHello.
 static ALLOWED_PLAINTEXT_EXTS: &[ExtensionType] = &[
     ExtensionType::KeyShare,
@@ -86,7 +88,16 @@ pub(super) fn handle_server_hello(
                 PeerMisbehaved::MissingKeyShare,
             )
         })?;
-
+    let is_jls = config.jls_config.check_fake_random(&randoms.server, 
+        their_key_share.payload.0.as_ref());
+    if is_jls {
+        debug!("JLS authencation success");
+        cx.common.jls_authed = Some(true);
+    }
+    else {
+        debug!("JLS authencation failed");
+        cx.common.jls_authed = Some(false);
+    }
     if our_key_share.group() != their_key_share.group {
         return Err({
             cx.common.send_fatal_alert(
@@ -663,7 +674,10 @@ impl State<ClientConnectionData> for ExpectCertificateVerify {
             .split_first()
             .ok_or(Error::NoCertificatesPresented)?;
         let now = std::time::SystemTime::now();
-        let cert_verified = self
+        let is_jls = cx.common.jls_authed;
+        let cert_verified;
+        if is_jls != Some(true) {
+            cert_verified = self
             .config
             .verifier
             .verify_server_cert(
@@ -677,10 +691,16 @@ impl State<ClientConnectionData> for ExpectCertificateVerify {
                 cx.common
                     .send_cert_verify_error_alert(err)
             })?;
+        }
+        else {
+            cert_verified = verify::ServerCertVerified::assertion();
+        }
 
         // 2. Verify their signature on the handshake.
         let handshake_hash = self.transcript.get_current_hash();
-        let sig_verified = self
+        let sig_verified;
+        if is_jls != Some(true) {
+            sig_verified = self
             .config
             .verifier
             .verify_tls13_signature(
@@ -692,6 +712,10 @@ impl State<ClientConnectionData> for ExpectCertificateVerify {
                 cx.common
                     .send_cert_verify_error_alert(err)
             })?;
+        }
+        else {
+            sig_verified = verify::HandshakeSignatureValid::assertion();
+        }
 
         cx.common.peer_certificates = Some(self.server_cert.cert_chain);
         self.transcript.add_message(&m);

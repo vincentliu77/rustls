@@ -1,6 +1,7 @@
 use crate::builder::{ConfigBuilder, WantsVerifier};
 use crate::client::{handy, ClientConfig, ResolvesClientCert};
 use crate::error::Error;
+use crate::jls::JlsConfig;
 use crate::key_log::NoKeyLog;
 use crate::kx::SupportedKxGroup;
 use crate::suites::SupportedCipherSuite;
@@ -100,6 +101,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
             #[cfg(feature = "secret_extraction")]
             enable_secret_extraction: false,
             enable_early_data: false,
+            jls_config: JlsConfig::default()
         }
     }
 }

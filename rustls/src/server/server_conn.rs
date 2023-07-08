@@ -4,6 +4,7 @@ use crate::conn::{ConnectionCommon, ConnectionCore};
 use crate::dns_name::DnsName;
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
+use crate::jls::JlsConfig;
 use crate::kx::SupportedKxGroup;
 #[cfg(feature = "logging")]
 use crate::log::trace;
@@ -296,6 +297,9 @@ pub struct ServerConfig {
     /// If this is 0, no tickets are sent and clients will not be able to
     /// do any resumption.
     pub send_tls13_tickets: usize,
+
+    /// JLS server configuration
+    pub jls_config: JlsConfig,
 }
 
 impl fmt::Debug for ServerConfig {

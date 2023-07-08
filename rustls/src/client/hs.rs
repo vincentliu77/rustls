@@ -236,6 +236,11 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(key_share) = &key_share {
+        let fake_random = input.config.jls_config.
+        build_fake_random(input.random.0[0..16].try_into().unwrap(),
+        key_share.pubkey.as_ref());
+        input.random.0 = fake_random;
+
         debug_assert!(support_tls13);
         let key_share = KeyShareEntry::new(key_share.group(), key_share.pubkey.as_ref());
         exts.push(ClientExtension::KeyShare(vec![key_share]));

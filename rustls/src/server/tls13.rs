@@ -187,6 +187,17 @@ mod client_hello {
                 ));
             }
 
+            //JLS authentication
+            if self.config.jls_config.check_fake_random(&self.randoms.client,
+                 shares_ext[0].payload.0.as_ref()) {
+                debug!("JLS client authenticated");
+                cx.common.jls_authed = Some(true);
+            }
+            else {
+                debug!("JLS client authentication failed");
+                cx.common.jls_authed = Some(false);
+            }
+
             let early_data_requested = client_hello.early_data_extension_offered();
 
             // EarlyData extension is illegal in second ClientHello
@@ -490,7 +501,8 @@ mod client_hello {
         let kx = kx::KeyExchange::choose(share.group, &config.kx_groups)
             .and_then(kx::KeyExchange::start)
             .ok_or(Error::FailedToGetRandomBytes)?;
-
+        let fake_random = config.jls_config
+        .build_fake_random(randoms.server[0..16].try_into().unwrap(), kx.pubkey.as_ref());
         let kse = KeyShareEntry::new(share.group, kx.pubkey.as_ref());
         extensions.push(ServerExtension::KeyShare(kse));
         extensions.push(ServerExtension::SupportedVersions(ProtocolVersion::TLSv1_3));
@@ -505,7 +517,7 @@ mod client_hello {
                 typ: HandshakeType::ServerHello,
                 payload: HandshakePayload::ServerHello(ServerHelloPayload {
                     legacy_version: ProtocolVersion::TLSv1_2,
-                    random: Random::from(randoms.server),
+                    random: Random::from(fake_random),
                     session_id: *session_id,
                     cipher_suite: suite.common.suite,
                     compression_method: Compression::Null,
@@ -513,7 +525,8 @@ mod client_hello {
                 }),
             }),
         };
-
+        //TODO server hello fake random generation
+        // let sh = config.jls_config.
         cx.common.check_aligned_handshake()?;
 
         let client_hello_hash = transcript.get_hash_given(&[]);

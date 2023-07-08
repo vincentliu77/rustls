@@ -43,6 +43,9 @@ pub struct CommonState {
     pub(crate) sendable_tls: ChunkVecBuffer,
     queued_key_update_message: Option<Vec<u8>>,
 
+    /// None: not auth yet; false: auth failed;true: auth succeeded
+    /// FIX ME It's not a common state
+    pub jls_authed: Option<bool>, 
     #[allow(dead_code)] // only read for QUIC
     /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
     pub(crate) protocol: Protocol,
@@ -74,6 +77,7 @@ impl CommonState {
             sendable_plaintext: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
             sendable_tls: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
             queued_key_update_message: None,
+            jls_authed: None,
 
             protocol: Protocol::Tcp,
             #[cfg(feature = "quic")]
