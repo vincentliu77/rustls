@@ -1,5 +1,6 @@
 use crate::msgs::{message::{Message, MessagePayload}, handshake::{HandshakePayload, Random}};
-use log::trace;
+#[cfg(feature = "logging")]
+use crate::log::{debug, trace};
 use ring::digest::{digest, SHA512, SHA256};
 
 // use aes_gcm to support 512bits long nonce (not supported by ring)
