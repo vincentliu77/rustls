@@ -612,9 +612,9 @@ impl ClientConnection {
         self.inner.extract_secrets()
     }
 
-    /// Return true is a jls connection established
-    pub fn is_jls(&self) -> bool{
-        Some(true) == self.inner.core.common_state.jls_authed
+    /// Return Some(true) is a jls connection established, return None if not handshaked
+    pub fn is_jls(&self) -> Option<bool> {
+        self.inner.core.common_state.jls_authed
     }
 }
 
