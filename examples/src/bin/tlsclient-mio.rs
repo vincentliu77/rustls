@@ -2,6 +2,8 @@ use std::process;
 use std::sync::Arc;
 
 use mio::net::TcpStream;
+use rustls::crypto::ring::Ring;
+use rustls::crypto::CryptoProvider;
 
 use std::fs;
 use std::io;
@@ -31,7 +33,7 @@ impl TlsClient {
     fn new(
         sock: TcpStream,
         server_name: rustls::ServerName,
-        cfg: Arc<rustls::ClientConfig>,
+        cfg: Arc<rustls::ClientConfig<impl CryptoProvider>>,
     ) -> Self {
         Self {
             socket: sock,
@@ -353,7 +355,7 @@ mod danger {
 }
 
 #[cfg(feature = "dangerous_configuration")]
-fn apply_dangerous_options(args: &Args, cfg: &mut rustls::ClientConfig) {
+fn apply_dangerous_options(args: &Args, cfg: &mut rustls::ClientConfig<impl CryptoProvider>) {
     if args.flag_insecure {
         cfg.dangerous()
             .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
@@ -361,14 +363,14 @@ fn apply_dangerous_options(args: &Args, cfg: &mut rustls::ClientConfig) {
 }
 
 #[cfg(not(feature = "dangerous_configuration"))]
-fn apply_dangerous_options(args: &Args, _: &mut rustls::ClientConfig) {
+fn apply_dangerous_options(args: &Args, _: &mut rustls::ClientConfig<impl CryptoProvider>) {
     if args.flag_insecure {
         panic!("This build does not support --insecure.");
     }
 }
 
 /// Build a `ClientConfig` from our arguments
-fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
+fn make_config(args: &Args) -> Arc<rustls::ClientConfig<Ring>> {
     let mut root_store = RootCertStore::empty();
 
     if args.flag_cafile.is_some() {
@@ -376,7 +378,7 @@ fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
 
         let certfile = fs::File::open(cafile).expect("Cannot open CA file");
         let mut reader = BufReader::new(certfile);
-        root_store.add_parsable_certificates(&rustls_pemfile::certs(&mut reader).unwrap());
+        root_store.add_parsable_certificates(rustls_pemfile::certs(&mut reader).unwrap());
     } else {
         root_store.add_server_trust_anchors(
             webpki_roots::TLS_SERVER_ROOTS
@@ -416,7 +418,7 @@ fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
             let certs = load_certs(certs_file);
             let key = load_private_key(key_file);
             config
-                .with_single_cert(certs, key)
+                .with_client_auth_cert(certs, key)
                 .expect("invalid client auth certs/key")
         }
         (None, None) => config.with_no_client_auth(),

@@ -1,9 +1,9 @@
 use crate::cipher::{MessageDecrypter, MessageEncrypter};
 use crate::common_state::{CommonState, Side};
 use crate::conn::ConnectionRandoms;
+use crate::crypto;
 use crate::enums::{AlertDescription, CipherSuite, SignatureScheme};
 use crate::error::{Error, InvalidMessage};
-use crate::kx;
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::handshake::KeyExchangeAlgorithm;
 use crate::suites::{BulkAlgorithm, CipherSuiteCommon, SupportedCipherSuite};
@@ -206,7 +206,7 @@ pub(crate) struct ConnectionSecrets {
 
 impl ConnectionSecrets {
     pub(crate) fn from_key_exchange(
-        kx: kx::KeyExchange,
+        kx: impl crypto::KeyExchange,
         peer_pub_key: &[u8],
         ems_seed: Option<Digest>,
         randoms: ConnectionRandoms,
@@ -515,12 +515,14 @@ pub(crate) const DOWNGRADE_SENTINEL: [u8; 8] = [0x44, 0x4f, 0x57, 0x4e, 0x47, 0x
 mod tests {
     use super::*;
     use crate::common_state::{CommonState, Side};
+    use crate::crypto::ring::{self, X25519};
+    use crate::crypto::KeyExchange;
     use crate::msgs::handshake::{ClientECDHParams, ServerECDHParams};
 
     #[test]
     fn server_ecdhe_remaining_bytes() {
-        let key = kx::KeyExchange::start(&kx::X25519).unwrap();
-        let server_params = ServerECDHParams::new(key.group(), key.pubkey.as_ref());
+        let key = ring::KeyExchange::start(crate::NamedGroup::X25519, &[&X25519]).unwrap();
+        let server_params = ServerECDHParams::new(key.group(), key.pub_key());
         let mut server_buf = Vec::new();
         server_params.encode(&mut server_buf);
         server_buf.push(34);

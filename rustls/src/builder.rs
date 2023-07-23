@@ -1,5 +1,5 @@
+use crate::crypto::{CryptoProvider, KeyExchange};
 use crate::error::Error;
-use crate::kx::{SupportedKxGroup, ALL_KX_GROUPS};
 use crate::suites::{SupportedCipherSuite, DEFAULT_CIPHER_SUITES};
 use crate::versions;
 
@@ -20,9 +20,10 @@ use std::marker::PhantomData;
 ///
 /// ```no_run
 /// # use rustls::ServerConfig;
+/// # use rustls::crypto::ring::Ring;
 /// # let certs = vec![];
 /// # let private_key = rustls::PrivateKey(vec![]);
-/// ServerConfig::builder()
+/// ServerConfig::<Ring>::builder()
 ///     .with_safe_default_cipher_suites()
 ///     .with_safe_default_kx_groups()
 ///     .with_safe_default_protocol_versions()
@@ -36,9 +37,10 @@ use std::marker::PhantomData;
 ///
 /// ```no_run
 /// # use rustls::ServerConfig;
+/// # use rustls::crypto::ring::Ring;
 /// # let certs = vec![];
 /// # let private_key = rustls::PrivateKey(vec![]);
-/// ServerConfig::builder()
+/// ServerConfig::<Ring>::builder()
 ///     .with_safe_defaults()
 ///     .with_no_client_auth()
 ///     .with_single_cert(certs, private_key)
@@ -49,16 +51,17 @@ use std::marker::PhantomData;
 ///
 /// ```no_run
 /// # use rustls::ClientConfig;
+/// # use rustls::crypto::ring::Ring;
 /// # let root_certs = rustls::RootCertStore::empty();
 /// # let certs = vec![];
 /// # let private_key = rustls::PrivateKey(vec![]);
-/// ClientConfig::builder()
+/// ClientConfig::<Ring>::builder()
 ///     .with_safe_default_cipher_suites()
 ///     .with_safe_default_kx_groups()
 ///     .with_safe_default_protocol_versions()
 ///     .unwrap()
 ///     .with_root_certificates(root_certs)
-///     .with_single_cert(certs, private_key)
+///     .with_client_auth_cert(certs, private_key)
 ///     .expect("bad certificate/key");
 /// ```
 ///
@@ -66,8 +69,9 @@ use std::marker::PhantomData;
 ///
 /// ```
 /// # use rustls::ClientConfig;
+/// # use rustls::crypto::ring::Ring;
 /// # let root_certs = rustls::RootCertStore::empty();
-/// ClientConfig::builder()
+/// ClientConfig::<Ring>::builder()
 ///     .with_safe_defaults()
 ///     .with_root_certificates(root_certs)
 ///     .with_no_client_auth();
@@ -102,13 +106,21 @@ pub struct ConfigBuilder<Side: ConfigSide, State> {
 impl<Side: ConfigSide, State: fmt::Debug> fmt::Debug for ConfigBuilder<Side, State> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let side_name = std::any::type_name::<Side>();
-        let side_name = side_name
-            .split("::")
-            .last()
-            .unwrap_or(side_name);
-        f.debug_struct(&format!("ConfigBuilder<{}, _>", side_name))
-            .field("state", &self.state)
-            .finish()
+        let (ty, param) = side_name
+            .split_once('<')
+            .unwrap_or((side_name, ""));
+        let (_, name) = ty.rsplit_once("::").unwrap_or(("", ty));
+        let (_, param) = param
+            .rsplit_once("::")
+            .unwrap_or(("", param));
+
+        f.debug_struct(&format!(
+            "ConfigBuilder<{}<{}>, _>",
+            name,
+            param.trim_end_matches('>')
+        ))
+        .field("state", &self.state)
+        .finish()
     }
 }
 
@@ -122,17 +134,17 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsCipherSuites> {
     /// Start side-specific config with defaults for underlying cryptography.
     ///
     /// If used, this will enable all safe supported cipher suites ([`DEFAULT_CIPHER_SUITES`]), all
-    /// safe supported key exchange groups ([`ALL_KX_GROUPS`]) and all safe supported protocol
-    /// versions ([`DEFAULT_VERSIONS`]).
+    /// safe supported key exchange groups ([`KeyExchange::all_kx_groups`]) and all safe supported
+    /// protocol versions ([`DEFAULT_VERSIONS`]).
     ///
     /// These are safe defaults, useful for 99% of applications.
     ///
     /// [`DEFAULT_VERSIONS`]: versions::DEFAULT_VERSIONS
-    pub fn with_safe_defaults(self) -> ConfigBuilder<S, WantsVerifier> {
+    pub fn with_safe_defaults(self) -> ConfigBuilder<S, WantsVerifier<S::CryptoProvider>> {
         ConfigBuilder {
             state: WantsVerifier {
                 cipher_suites: DEFAULT_CIPHER_SUITES.to_vec(),
-                kx_groups: ALL_KX_GROUPS.to_vec(),
+                kx_groups: <<S::CryptoProvider as CryptoProvider>::KeyExchange as KeyExchange>::all_kx_groups().to_vec(),
                 versions: versions::EnabledVersions::new(versions::DEFAULT_VERSIONS),
             },
             side: self.side,
@@ -174,8 +186,8 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsKxGroups> {
     /// Choose a specific set of key exchange groups.
     pub fn with_kx_groups(
         self,
-        kx_groups: &[&'static SupportedKxGroup],
-    ) -> ConfigBuilder<S, WantsVersions> {
+        kx_groups: &[&'static <<S::CryptoProvider as CryptoProvider>::KeyExchange as KeyExchange>::SupportedGroup],
+    ) -> ConfigBuilder<S, WantsVersions<S::CryptoProvider>> {
         ConfigBuilder {
             state: WantsVersions {
                 cipher_suites: self.state.cipher_suites,
@@ -185,11 +197,13 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsKxGroups> {
         }
     }
 
-    /// Choose the default set of key exchange groups ([`ALL_KX_GROUPS`]).
+    /// Choose the default set of key exchange groups ([`KeyExchange::all_kx_groups`]).
     ///
     /// This is a safe default: rustls doesn't implement any poor-quality groups.
-    pub fn with_safe_default_kx_groups(self) -> ConfigBuilder<S, WantsVersions> {
-        self.with_kx_groups(&ALL_KX_GROUPS)
+    pub fn with_safe_default_kx_groups(self) -> ConfigBuilder<S, WantsVersions<S::CryptoProvider>> {
+        self.with_kx_groups(
+            <<S::CryptoProvider as CryptoProvider>::KeyExchange as KeyExchange>::all_kx_groups(),
+        )
     }
 }
 
@@ -197,16 +211,16 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsKxGroups> {
 ///
 /// For more information, see the [`ConfigBuilder`] documentation.
 #[derive(Clone, Debug)]
-pub struct WantsVersions {
+pub struct WantsVersions<C: CryptoProvider> {
     cipher_suites: Vec<SupportedCipherSuite>,
-    kx_groups: Vec<&'static SupportedKxGroup>,
+    kx_groups: Vec<&'static <C::KeyExchange as KeyExchange>::SupportedGroup>,
 }
 
-impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
+impl<S: ConfigSide, C: CryptoProvider> ConfigBuilder<S, WantsVersions<C>> {
     /// Accept the default protocol versions: both TLS1.2 and TLS1.3 are enabled.
     pub fn with_safe_default_protocol_versions(
         self,
-    ) -> Result<ConfigBuilder<S, WantsVerifier>, Error> {
+    ) -> Result<ConfigBuilder<S, WantsVerifier<C>>, Error> {
         self.with_protocol_versions(versions::DEFAULT_VERSIONS)
     }
 
@@ -214,7 +228,7 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
     pub fn with_protocol_versions(
         self,
         versions: &[&'static versions::SupportedProtocolVersion],
-    ) -> Result<ConfigBuilder<S, WantsVerifier>, Error> {
+    ) -> Result<ConfigBuilder<S, WantsVerifier<C>>, Error> {
         let mut any_usable_suite = false;
         for suite in &self.state.cipher_suites {
             if versions.contains(&suite.version()) {
@@ -246,9 +260,10 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
 ///
 /// For more information, see the [`ConfigBuilder`] documentation.
 #[derive(Clone, Debug)]
-pub struct WantsVerifier {
+pub struct WantsVerifier<C: CryptoProvider> {
     pub(crate) cipher_suites: Vec<SupportedCipherSuite>,
-    pub(crate) kx_groups: Vec<&'static SupportedKxGroup>,
+    pub(crate) kx_groups:
+        Vec<&'static <<C as CryptoProvider>::KeyExchange as KeyExchange>::SupportedGroup>,
     pub(crate) versions: versions::EnabledVersions,
 }
 
@@ -256,13 +271,22 @@ pub struct WantsVerifier {
 ///
 /// [`ClientConfig`]: crate::ClientConfig
 /// [`ServerConfig`]: crate::ServerConfig
-pub trait ConfigSide: sealed::Sealed {}
+pub trait ConfigSide: sealed::Sealed {
+    /// Cryptographic provider.
+    type CryptoProvider: CryptoProvider;
+}
 
-impl ConfigSide for crate::ClientConfig {}
-impl ConfigSide for crate::ServerConfig {}
+impl<C: CryptoProvider> ConfigSide for crate::ClientConfig<C> {
+    type CryptoProvider = C;
+}
+impl<C: CryptoProvider> ConfigSide for crate::ServerConfig<C> {
+    type CryptoProvider = C;
+}
 
 mod sealed {
+    use crate::crypto::CryptoProvider;
+
     pub trait Sealed {}
-    impl Sealed for crate::ClientConfig {}
-    impl Sealed for crate::ServerConfig {}
+    impl<C: CryptoProvider> Sealed for crate::ClientConfig<C> {}
+    impl<C: CryptoProvider> Sealed for crate::ServerConfig<C> {}
 }

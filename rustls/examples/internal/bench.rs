@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustls::client::Resumption;
+use rustls::crypto::ring::Ring;
 use rustls::server::{
     AllowAnyAuthenticatedClient, NoClientAuth, NoServerSessionStorage, ServerSessionMemoryCache,
 };
@@ -296,7 +297,7 @@ fn make_server_config(
     client_auth: ClientAuth,
     resume: ResumptionParam,
     max_fragment_size: Option<usize>,
-) -> ServerConfig {
+) -> ServerConfig<Ring> {
     let client_auth = match client_auth {
         ClientAuth::Yes => {
             let roots = params.key_type.get_chain();
@@ -334,11 +335,11 @@ fn make_client_config(
     params: &BenchmarkParam,
     clientauth: ClientAuth,
     resume: ResumptionParam,
-) -> ClientConfig {
+) -> ClientConfig<Ring> {
     let mut root_store = RootCertStore::empty();
     let mut rootbuf =
         io::BufReader::new(fs::File::open(params.key_type.path_for("ca.cert")).unwrap());
-    root_store.add_parsable_certificates(&rustls_pemfile::certs(&mut rootbuf).unwrap());
+    root_store.add_parsable_certificates(rustls_pemfile::certs(&mut rootbuf).unwrap());
 
     let cfg = ClientConfig::builder()
         .with_cipher_suites(&[params.ciphersuite])
@@ -348,7 +349,7 @@ fn make_client_config(
         .with_root_certificates(root_store);
 
     let mut cfg = if clientauth == ClientAuth::Yes {
-        cfg.with_single_cert(
+        cfg.with_client_auth_cert(
             params.key_type.get_client_chain(),
             params.key_type.get_client_key(),
         )

@@ -6,6 +6,7 @@ permissions:
 on:
   push:
   pull_request:
+  merge_group:
   schedule:
     - cron: '0 18 * * *'
 
@@ -135,7 +136,7 @@ jobs:
           done
 
   benchmarks:
-    name: Smoke-test benchmarks
+    name: Run benchmarks
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout sources
@@ -144,10 +145,15 @@ jobs:
           persist-credentials: false
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Smoke-test benchmark program
         run: cargo run --release --example bench
+
+      - name: Run micro-benchmarks
+        run: cargo bench
+        env:
+          RUSTFLAGS: --cfg=bench
 
   docs:
     name: Check for documentation errors
@@ -213,6 +219,33 @@ jobs:
       - name: cargo test (debug; all features; -Z minimal-versions)
         run: cargo -Z minimal-versions test --all-features
 
+  cross:
+    name: Check cross compilation targets
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cross
+        uses: taiki-e/install-action@cross
+      - run: cross build --target i686-unknown-linux-gnu
+
+  semver:
+    name: Check semver compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+
   format:
     name: Format
     runs-on: ubuntu-latest
@@ -244,10 +277,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --package rustls --all-features -- --deny warnings
-      - run: cargo clippy --package rustls --no-default-features -- --deny warnings
-      - run: cargo clippy --manifest-path=connect-tests/Cargo.toml --all-features -- --deny warnings
-      - run: cargo clippy --manifest-path=fuzz/Cargo.toml --all-features -- --deny warnings
+      - run: cargo clippy --package rustls --all-features -- --deny warnings --allow unknown-lints
+      - run: cargo clippy --package rustls --no-default-features -- --deny warnings --allow unknown-lints
+      - run: cargo clippy --manifest-path=connect-tests/Cargo.toml --all-features -- --deny warnings --allow unknown-lints
+      - run: cargo clippy --manifest-path=fuzz/Cargo.toml --all-features -- --deny warnings --allow unknown-lints
 
   clippy-nightly:
     name: Clippy (Nightly)

@@ -1,6 +1,6 @@
 [package]
 name = "rustls"
-version = "0.21.2"
+version = "0.22.0-alpha.0"
 edition = "2021"
 rust-version = "1.60"
 license = "Apache-2.0 OR ISC OR MIT"
@@ -19,7 +19,8 @@ rustversion = { version = "1.0.6", optional = true }
 aes-gcm = "0.10.2"
 log = { version = "0.4.4", optional = true }
 ring = "0.16.20"
-webpki = { package = "rustls-webpki", version = "0.100.0", features = ["alloc", "std"] }
+subtle = "2.5.0"
+webpki = { package = "rustls-webpki", version = "0.101.0", features = ["alloc", "std"] }
 
 [features]
 default = ["logging"]
@@ -34,8 +35,8 @@ read_buf = ["rustversion"]
 bencher = "0.1.5"
 env_logger = "0.10"
 log = "0.4.4"
-webpki-roots = "0.23.0"
-rustls-pemfile = "1.0.0"
+webpki-roots = "0.24.0"
+rustls-pemfile = "1.0.3"
 base64 = "0.21"
 
 [[example]]

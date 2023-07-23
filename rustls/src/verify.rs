@@ -3,8 +3,10 @@ use std::fmt;
 use crate::anchors::{OwnedTrustAnchor, RootCertStore};
 use crate::client::ServerName;
 use crate::enums::SignatureScheme;
-use crate::error::{CertificateError, Error, InvalidMessage, PeerMisbehaved};
-use crate::key::Certificate;
+use crate::error::{
+    CertRevocationListError, CertificateError, Error, InvalidMessage, PeerMisbehaved,
+};
+use crate::key::{Certificate, ParsedCertificate};
 #[cfg(feature = "logging")]
 use crate::log::trace;
 use crate::msgs::base::PayloadU16;
@@ -307,6 +309,65 @@ impl fmt::Debug for dyn ClientCertVerifier {
     }
 }
 
+/// Verify that the end-entity certificate `end_entity` is a valid server cert
+/// and chains to at least one of the [OwnedTrustAnchor] in the `roots` [RootCertStore].
+///
+/// `intermediates` contains all certificates other than `end_entity` that
+/// were sent as part of the server's [Certificate] message. It is in the
+/// same order that the server sent them and may be empty.
+#[allow(dead_code)]
+#[cfg_attr(not(feature = "dangerous_configuration"), allow(unreachable_pub))]
+#[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
+pub fn verify_server_cert_signed_by_trust_anchor(
+    cert: &ParsedCertificate,
+    roots: &RootCertStore,
+    intermediates: &[Certificate],
+    now: SystemTime,
+) -> Result<(), Error> {
+    let chain = intermediate_chain(intermediates);
+    let trust_roots = trust_roots(roots);
+    let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+
+    cert.0
+        .verify_is_valid_tls_server_cert(
+            SUPPORTED_SIG_ALGS,
+            &webpki::TlsServerTrustAnchors(&trust_roots),
+            &chain,
+            webpki_now,
+        )
+        .map_err(pki_error)
+        .map(|_| ())
+}
+
+/// Verify that the `end_entity` has a name or alternative name matching the `server_name`
+/// note: this only verifies the name and should be used in conjuction with more verification
+/// like [verify_server_cert_signed_by_trust_anchor]
+#[cfg_attr(not(feature = "dangerous_configuration"), allow(unreachable_pub))]
+#[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
+pub fn verify_server_name(cert: &ParsedCertificate, server_name: &ServerName) -> Result<(), Error> {
+    match server_name {
+        ServerName::DnsName(dns_name) => {
+            // unlikely error because dns_name::DnsNameRef and webpki::DnsNameRef
+            // should have the same encoding rules.
+            let dns_name = webpki::DnsNameRef::try_from_ascii_str(dns_name.as_ref())
+                .map_err(|_| Error::InvalidCertificate(CertificateError::BadEncoding))?;
+            let name = webpki::SubjectNameRef::DnsName(dns_name);
+            cert.0
+                .verify_is_valid_for_subject_name(name)
+                .map_err(pki_error)?;
+        }
+        ServerName::IpAddress(ip_addr) => {
+            let ip_addr = webpki::IpAddr::from(*ip_addr);
+            cert.0
+                .verify_is_valid_for_subject_name(webpki::SubjectNameRef::IpAddress(
+                    webpki::IpAddrRef::from(&ip_addr),
+                ))
+                .map_err(pki_error)?;
+        }
+    }
+    Ok(())
+}
+
 impl ServerCertVerifier for WebPkiVerifier {
     /// Will verify the certificate is valid in the following ways:
     /// - Signed by a  trusted `RootCertStore` CA
@@ -320,43 +381,16 @@ impl ServerCertVerifier for WebPkiVerifier {
         ocsp_response: &[u8],
         now: SystemTime,
     ) -> Result<ServerCertVerified, Error> {
-        let (cert, chain, trustroots) = prepare(end_entity, intermediates, &self.roots)?;
-        let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+        let cert = ParsedCertificate::try_from(end_entity)?;
 
-        let cert = cert
-            .verify_is_valid_tls_server_cert(
-                SUPPORTED_SIG_ALGS,
-                &webpki::TlsServerTrustAnchors(&trustroots),
-                &chain,
-                webpki_now,
-            )
-            .map_err(pki_error)
-            .map(|_| cert)?;
+        verify_server_cert_signed_by_trust_anchor(&cert, &self.roots, intermediates, now)?;
 
         if !ocsp_response.is_empty() {
             trace!("Unvalidated OCSP response: {:?}", ocsp_response.to_vec());
         }
 
-        match server_name {
-            ServerName::DnsName(dns_name) => {
-                // unlikely error because dns_name::DnsNameRef and webpki::DnsNameRef
-                // should have the same encoding rules.
-                let dns_name = webpki::DnsNameRef::try_from_ascii_str(dns_name.as_ref())
-                    .map_err(|_| Error::InvalidCertificate(CertificateError::BadEncoding))?;
-                let name = webpki::SubjectNameRef::DnsName(dns_name);
-                cert.verify_is_valid_for_subject_name(name)
-                    .map_err(pki_error)
-                    .map(|_| ServerCertVerified::assertion())
-            }
-            ServerName::IpAddress(ip_addr) => {
-                let ip_addr = webpki::IpAddr::from(*ip_addr);
-                cert.verify_is_valid_for_subject_name(webpki::SubjectNameRef::IpAddress(
-                    webpki::IpAddrRef::from(&ip_addr),
-                ))
-                .map_err(pki_error)
-                .map(|_| ServerCertVerified::assertion())
-            }
-        }
+        verify_server_name(&cert, server_name)?;
+        Ok(ServerCertVerified::assertion())
     }
 }
 
@@ -393,39 +427,41 @@ impl WebPkiVerifier {
     }
 }
 
-type CertChainAndRoots<'a, 'b> = (
-    webpki::EndEntityCert<'a>,
-    Vec<&'a [u8]>,
-    Vec<webpki::TrustAnchor<'b>>,
-);
-
-fn prepare<'a, 'b>(
-    end_entity: &'a Certificate,
-    intermediates: &'a [Certificate],
-    roots: &'b RootCertStore,
-) -> Result<CertChainAndRoots<'a, 'b>, Error> {
-    // EE cert must appear first.
-    let cert = webpki::EndEntityCert::try_from(end_entity.0.as_ref()).map_err(pki_error)?;
-
-    let intermediates: Vec<&'a [u8]> = intermediates
+fn intermediate_chain(intermediates: &[Certificate]) -> Vec<&[u8]> {
+    intermediates
         .iter()
         .map(|cert| cert.0.as_ref())
-        .collect();
+        .collect()
+}
 
-    let trustroots: Vec<webpki::TrustAnchor> = roots
+fn trust_roots(roots: &RootCertStore) -> Vec<webpki::TrustAnchor> {
+    roots
         .roots
         .iter()
         .map(OwnedTrustAnchor::to_trust_anchor)
-        .collect();
+        .collect()
+}
 
-    Ok((cert, intermediates, trustroots))
+/// An unparsed DER encoded Certificate Revocation List (CRL).
+pub struct UnparsedCertRevocationList(pub Vec<u8>);
+
+impl UnparsedCertRevocationList {
+    /// Parse the CRL DER, yielding a [`webpki::CertRevocationList`] or an error if the CRL
+    /// is malformed, or uses unsupported features.
+    pub fn parse(&self) -> Result<webpki::OwnedCertRevocationList, CertRevocationListError> {
+        webpki::BorrowedCertRevocationList::from_der(&self.0)
+            .and_then(|crl| crl.to_owned())
+            .map_err(CertRevocationListError::from)
+    }
 }
 
 /// A `ClientCertVerifier` that will ensure that every client provides a trusted
-/// certificate, without any name checking.
+/// certificate, without any name checking. Optionally, client certificates will
+/// have their revocation status checked using the DER encoded CRLs provided.
 pub struct AllowAnyAuthenticatedClient {
     roots: RootCertStore,
     subjects: Vec<DistinguishedName>,
+    crls: Vec<webpki::OwnedCertRevocationList>,
 }
 
 impl AllowAnyAuthenticatedClient {
@@ -439,8 +475,24 @@ impl AllowAnyAuthenticatedClient {
                 .iter()
                 .map(|r| r.subject().clone())
                 .collect(),
+            crls: Vec::new(),
             roots,
         }
+    }
+
+    /// Update the verifier to validate client certificates against the provided DER format
+    /// unparsed certificate revocation lists (CRLs).
+    pub fn with_crls(
+        self,
+        crls: impl IntoIterator<Item = UnparsedCertRevocationList>,
+    ) -> Result<Self, CertRevocationListError> {
+        Ok(Self {
+            crls: crls
+                .into_iter()
+                .map(|der_crl| der_crl.parse())
+                .collect::<Result<Vec<_>, CertRevocationListError>>()?,
+            ..self
+        })
     }
 
     /// Wrap this verifier in an [`Arc`] and coerce it to `dyn ClientCertVerifier`
@@ -467,16 +519,28 @@ impl ClientCertVerifier for AllowAnyAuthenticatedClient {
         intermediates: &[Certificate],
         now: SystemTime,
     ) -> Result<ClientCertVerified, Error> {
-        let (cert, chain, trustroots) = prepare(end_entity, intermediates, &self.roots)?;
+        let cert = ParsedCertificate::try_from(end_entity)?;
+        let chain = intermediate_chain(intermediates);
+        let trust_roots = trust_roots(&self.roots);
         let now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
-        cert.verify_is_valid_tls_client_cert(
-            SUPPORTED_SIG_ALGS,
-            &webpki::TlsClientTrustAnchors(&trustroots),
-            &chain,
-            now,
-        )
-        .map_err(pki_error)
-        .map(|_| ClientCertVerified::assertion())
+
+        #[allow(trivial_casts)] // Cast to &dyn trait is required.
+        let crls = self
+            .crls
+            .iter()
+            .map(|crl| crl as &dyn webpki::CertRevocationList)
+            .collect::<Vec<_>>();
+
+        cert.0
+            .verify_is_valid_tls_client_cert(
+                SUPPORTED_SIG_ALGS,
+                &webpki::TlsClientTrustAnchors(&trust_roots),
+                &chain,
+                now,
+                crls.as_slice(),
+            )
+            .map_err(pki_error)
+            .map(|_| ClientCertVerified::assertion())
     }
 }
 
@@ -498,6 +562,17 @@ impl AllowAnyAnonymousOrAuthenticatedClient {
         Self {
             inner: AllowAnyAuthenticatedClient::new(roots),
         }
+    }
+
+    /// Update the verifier to validate client certificates against the provided DER format
+    /// unparsed certificate revocation lists (CRLs).
+    pub fn with_crls(
+        self,
+        crls: impl IntoIterator<Item = UnparsedCertRevocationList>,
+    ) -> Result<Self, CertRevocationListError> {
+        Ok(Self {
+            inner: self.inner.with_crls(crls)?,
+        })
     }
 
     /// Wrap this verifier in an [`Arc`] and coerce it to `dyn ClientCertVerifier`
@@ -533,7 +608,7 @@ impl ClientCertVerifier for AllowAnyAnonymousOrAuthenticatedClient {
     }
 }
 
-fn pki_error(error: webpki::Error) -> Error {
+pub(crate) fn pki_error(error: webpki::Error) -> Error {
     use webpki::Error::*;
     match error {
         BadDer | BadDerTime => CertificateError::BadEncoding.into(),
@@ -541,10 +616,19 @@ fn pki_error(error: webpki::Error) -> Error {
         CertExpired | InvalidCertValidity => CertificateError::Expired.into(),
         UnknownIssuer => CertificateError::UnknownIssuer.into(),
         CertNotValidForName => CertificateError::NotValidForName.into(),
+        CertRevoked => CertificateError::Revoked.into(),
+        IssuerNotCrlSigner => CertRevocationListError::IssuerInvalidForCrl.into(),
 
         InvalidSignatureForPublicKey
         | UnsupportedSignatureAlgorithm
         | UnsupportedSignatureAlgorithmForPublicKey => CertificateError::BadSignature.into(),
+
+        InvalidCrlSignatureForPublicKey
+        | UnsupportedCrlSignatureAlgorithm
+        | UnsupportedCrlSignatureAlgorithmForPublicKey => {
+            CertRevocationListError::BadSignature.into()
+        }
+
         _ => CertificateError::Other(Arc::new(error)).into(),
     }
 }
@@ -756,6 +840,35 @@ mod tests {
         assert_eq!(
             format!("{:?}", ServerCertVerified::assertion()),
             "ServerCertVerified(())"
+        );
+    }
+
+    #[test]
+    fn pki_crl_errors() {
+        // CRL signature errors should be turned into BadSignature.
+        assert_eq!(
+            pki_error(webpki::Error::InvalidCrlSignatureForPublicKey),
+            Error::InvalidCertRevocationList(CertRevocationListError::BadSignature),
+        );
+        assert_eq!(
+            pki_error(webpki::Error::UnsupportedCrlSignatureAlgorithm),
+            Error::InvalidCertRevocationList(CertRevocationListError::BadSignature),
+        );
+        assert_eq!(
+            pki_error(webpki::Error::UnsupportedCrlSignatureAlgorithmForPublicKey),
+            Error::InvalidCertRevocationList(CertRevocationListError::BadSignature),
+        );
+
+        // Revoked cert errors should be turned into Revoked.
+        assert_eq!(
+            pki_error(webpki::Error::CertRevoked),
+            Error::InvalidCertificate(CertificateError::Revoked),
+        );
+
+        // Issuer not CRL signer errors should be turned into IssuerInvalidForCrl
+        assert_eq!(
+            pki_error(webpki::Error::IssuerNotCrlSigner),
+            Error::InvalidCertRevocationList(CertRevocationListError::IssuerInvalidForCrl)
         );
     }
 }

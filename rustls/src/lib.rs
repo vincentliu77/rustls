@@ -122,7 +122,7 @@
 //!
 //! ```rust,no_run
 //! # let root_store: rustls::RootCertStore = panic!();
-//! let config = rustls::ClientConfig::builder()
+//! let config = rustls::ClientConfig::<rustls::crypto::ring::Ring>::builder()
 //!     .with_safe_defaults()
 //!     .with_root_certificates(root_store)
 //!     .with_no_client_auth();
@@ -148,7 +148,7 @@
 //! #          )
 //! #      })
 //! # );
-//! # let config = rustls::ClientConfig::builder()
+//! # let config = rustls::ClientConfig::<rustls::crypto::ring::Ring>::builder()
 //! #     .with_safe_defaults()
 //! #     .with_root_certificates(root_store)
 //! #     .with_no_client_auth();
@@ -181,7 +181,7 @@
 //! errors.
 //!
 //! ```rust,no_run
-//! # let mut client = rustls::ClientConnection::new(panic!(), panic!()).unwrap();
+//! # let mut client = rustls::ClientConnection::new::<rustls::crypto::ring::Ring>(panic!(), panic!()).unwrap();
 //! # struct Socket { }
 //! # impl Socket {
 //! #   fn ready_for_write(&self) -> bool { false }
@@ -261,7 +261,7 @@
 
 // Require docs for public APIs, deny unsafe code, etc.
 #![forbid(unsafe_code, unused_must_use)]
-#![cfg_attr(not(read_buf), forbid(unstable_features))]
+#![cfg_attr(not(any(read_buf, bench)), forbid(unstable_features))]
 #![deny(
     clippy::clone_on_ref_ptr,
     clippy::use_self,
@@ -301,6 +301,12 @@
 // is used to avoid needing `rustversion` to be compiled twice during
 // cross-compiling.
 #![cfg_attr(read_buf, feature(read_buf))]
+#![cfg_attr(bench, feature(test))]
+
+// Import `test` sysroot crate for `Bencher` definitions.
+#[cfg(bench)]
+#[allow(unused_extern_crates)]
+extern crate test;
 
 // log for logging (optional).
 #[cfg(feature = "logging")]
@@ -320,6 +326,8 @@ mod anchors;
 mod cipher;
 mod common_state;
 mod conn;
+/// Crypto provider interface.
+pub mod crypto;
 mod dns_name;
 mod error;
 mod hash_hs;
@@ -343,7 +351,6 @@ mod enums;
 mod key;
 mod key_log;
 mod key_log_file;
-mod kx;
 mod suites;
 mod ticketer;
 mod versions;
@@ -374,15 +381,19 @@ pub use crate::builder::{
 };
 pub use crate::common_state::{CommonState, IoState, Side};
 pub use crate::conn::{Connection, ConnectionCommon, Reader, SideData, Writer};
+pub use crate::crypto::ring::Ticketer;
+pub use crate::crypto::ring::{SupportedKxGroup, ALL_KX_GROUPS};
 pub use crate::enums::{
     AlertDescription, CipherSuite, ContentType, HandshakeType, ProtocolVersion, SignatureAlgorithm,
     SignatureScheme,
 };
-pub use crate::error::{CertificateError, Error, InvalidMessage, PeerIncompatible, PeerMisbehaved};
+pub use crate::error::{
+    CertRevocationListError, CertificateError, Error, InvalidMessage, PeerIncompatible,
+    PeerMisbehaved,
+};
 pub use crate::key::{Certificate, PrivateKey};
 pub use crate::key_log::{KeyLog, NoKeyLog};
 pub use crate::key_log_file::KeyLogFile;
-pub use crate::kx::{SupportedKxGroup, ALL_KX_GROUPS};
 pub use crate::msgs::enums::NamedGroup;
 pub use crate::msgs::handshake::DistinguishedName;
 pub use crate::stream::{Stream, StreamOwned};
@@ -392,7 +403,7 @@ pub use crate::suites::{
 #[cfg(feature = "secret_extraction")]
 #[cfg_attr(docsrs, doc(cfg(feature = "secret_extraction")))]
 pub use crate::suites::{ConnectionTrafficSecrets, ExtractedSecrets};
-pub use crate::ticketer::Ticketer;
+pub use crate::ticketer::TicketSwitcher;
 #[cfg(feature = "tls12")]
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
@@ -421,7 +432,8 @@ pub mod client {
 
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::verify::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
+        verify_server_cert_signed_by_trust_anchor, verify_server_name, HandshakeSignatureValid,
+        ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
     };
     #[cfg(feature = "dangerous_configuration")]
     pub use client_conn::danger::DangerousClientConfig;
@@ -445,6 +457,7 @@ pub mod server {
 
     pub use crate::verify::{
         AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
+        UnparsedCertRevocationList,
     };
     pub use builder::WantsServerCert;
     pub use handy::ResolvesServerCertUsingSni;
@@ -457,6 +470,8 @@ pub mod server {
 
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::dns_name::DnsName;
+    #[cfg(feature = "dangerous_configuration")]
+    pub use crate::key::ParsedCertificate;
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::verify::{ClientCertVerified, ClientCertVerifier};
 }
@@ -494,14 +509,8 @@ pub mod version {
     pub use crate::versions::TLS13;
 }
 
-/// All defined key exchange groups appear in this module.
-///
-/// ALL_KX_GROUPS is provided as an array of all of these values.
-pub mod kx_group {
-    pub use crate::kx::SECP256R1;
-    pub use crate::kx::SECP384R1;
-    pub use crate::kx::X25519;
-}
+/// All defined key exchange groups supported by *ring* appear in this module.
+pub use crypto::ring::kx_group;
 
 /// Message signing interfaces and implementations.
 pub mod sign;

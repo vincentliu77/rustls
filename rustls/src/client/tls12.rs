@@ -1,11 +1,11 @@
 use crate::check::{inappropriate_handshake_message, inappropriate_message};
 use crate::common_state::{CommonState, Side, State};
 use crate::conn::ConnectionRandoms;
+use crate::crypto::{CryptoProvider, KeyExchange, KeyExchangeError};
 use crate::enums::ProtocolVersion;
 use crate::enums::{AlertDescription, ContentType, HandshakeType};
 use crate::error::{Error, InvalidMessage, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
-use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
@@ -30,23 +30,24 @@ use super::hs::ClientContext;
 use crate::client::common::ClientAuthDetails;
 use crate::client::common::ServerCertDetails;
 use crate::client::{hs, ClientConfig, ServerName};
+use crate::rand::GetRandomFailed;
 
-use ring::agreement::PublicKey;
-use ring::constant_time;
+use subtle::ConstantTimeEq;
 
 use std::sync::Arc;
 
 pub(super) use server_hello::CompleteServerHelloHandling;
 
 mod server_hello {
+    use crate::crypto::CryptoProvider;
     use crate::msgs::enums::ExtensionType;
     use crate::msgs::handshake::HasServerExtensions;
     use crate::msgs::handshake::ServerHelloPayload;
 
     use super::*;
 
-    pub(in crate::client) struct CompleteServerHelloHandling {
-        pub(in crate::client) config: Arc<ClientConfig>,
+    pub(in crate::client) struct CompleteServerHelloHandling<C: CryptoProvider> {
+        pub(in crate::client) config: Arc<ClientConfig<C>>,
         pub(in crate::client) resuming_session: Option<persist::Tls12ClientSessionValue>,
         pub(in crate::client) server_name: ServerName,
         pub(in crate::client) randoms: ConnectionRandoms,
@@ -54,7 +55,7 @@ mod server_hello {
         pub(in crate::client) transcript: HandshakeHash,
     }
 
-    impl CompleteServerHelloHandling {
+    impl<C: CryptoProvider> CompleteServerHelloHandling<C> {
         pub(in crate::client) fn handle_server_hello(
             mut self,
             cx: &mut ClientContext,
@@ -180,8 +181,8 @@ mod server_hello {
     }
 }
 
-struct ExpectCertificate {
-    config: Arc<ClientConfig>,
+struct ExpectCertificate<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -193,7 +194,7 @@ struct ExpectCertificate {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectCertificate {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificate<C> {
     fn handle(
         mut self: Box<Self>,
         _cx: &mut ClientContext<'_>,
@@ -238,8 +239,8 @@ impl State<ClientConnectionData> for ExpectCertificate {
     }
 }
 
-struct ExpectCertificateStatusOrServerKx {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateStatusOrServerKx<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -251,7 +252,7 @@ struct ExpectCertificateStatusOrServerKx {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateStatusOrServerKx {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateStatusOrServerKx<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         match m.payload {
             MessagePayload::Handshake {
@@ -306,8 +307,8 @@ impl State<ClientConnectionData> for ExpectCertificateStatusOrServerKx {
     }
 }
 
-struct ExpectCertificateStatus {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateStatus<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -319,7 +320,7 @@ struct ExpectCertificateStatus {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateStatus {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateStatus<C> {
     fn handle(
         mut self: Box<Self>,
         _cx: &mut ClientContext<'_>,
@@ -355,8 +356,8 @@ impl State<ClientConnectionData> for ExpectCertificateStatus {
     }
 }
 
-struct ExpectServerKx {
-    config: Arc<ClientConfig>,
+struct ExpectServerKx<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -368,7 +369,7 @@ struct ExpectServerKx {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectServerKx {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectServerKx<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let opaque_kx = require_handshake_msg!(
             m,
@@ -429,9 +430,9 @@ fn emit_certificate(
     common.send_msg(cert, false);
 }
 
-fn emit_clientkx(transcript: &mut HandshakeHash, common: &mut CommonState, pubkey: &PublicKey) {
+fn emit_clientkx(transcript: &mut HandshakeHash, common: &mut CommonState, pub_key: &[u8]) {
     let mut buf = Vec::new();
-    let ecpoint = PayloadU8::new(Vec::from(pubkey.as_ref()));
+    let ecpoint = PayloadU8::new(Vec::from(pub_key));
     ecpoint.encode(&mut buf);
     let pubkey = Payload::new(buf);
 
@@ -520,8 +521,8 @@ impl ServerKxDetails {
 // --- Either a CertificateRequest, or a ServerHelloDone. ---
 // Existence of the CertificateRequest tells us the server is asking for
 // client auth.  Otherwise we go straight to ServerHelloDone.
-struct ExpectServerDoneOrCertReq {
-    config: Arc<ClientConfig>,
+struct ExpectServerDoneOrCertReq<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -534,7 +535,7 @@ struct ExpectServerDoneOrCertReq {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectServerDoneOrCertReq {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectServerDoneOrCertReq<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         if matches!(
             m.payload,
@@ -582,8 +583,8 @@ impl State<ClientConnectionData> for ExpectServerDoneOrCertReq {
     }
 }
 
-struct ExpectCertificateRequest {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateRequest<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -596,7 +597,7 @@ struct ExpectCertificateRequest {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateRequest {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateRequest<C> {
     fn handle(
         mut self: Box<Self>,
         _cx: &mut ClientContext<'_>,
@@ -643,8 +644,8 @@ impl State<ClientConnectionData> for ExpectCertificateRequest {
     }
 }
 
-struct ExpectServerDone {
-    config: Arc<ClientConfig>,
+struct ExpectServerDone<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -658,7 +659,7 @@ struct ExpectServerDone {
     must_issue_new_ticket: bool,
 }
 
-impl State<ClientConnectionData> for ExpectServerDone {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectServerDone<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         match m.payload {
             MessagePayload::Handshake {
@@ -765,16 +766,19 @@ impl State<ClientConnectionData> for ExpectServerDone {
         // 5a.
         let ecdh_params =
             tls12::decode_ecdh_params::<ServerECDHParams>(cx.common, &st.server_kx.kx_params)?;
-        let group =
-            kx::KeyExchange::choose(ecdh_params.curve_params.named_group, &st.config.kx_groups)
-                .ok_or(Error::PeerMisbehaved(
-                    PeerMisbehaved::SelectedUnofferedKxGroup,
-                ))?;
-        let kx = kx::KeyExchange::start(group).ok_or(Error::FailedToGetRandomBytes)?;
+        let named_group = ecdh_params.curve_params.named_group;
+        let kx =
+            match <<C as CryptoProvider>::KeyExchange>::start(named_group, &st.config.kx_groups) {
+                Ok(kx) => kx,
+                Err(KeyExchangeError::UnsupportedGroup) => {
+                    return Err(PeerMisbehaved::SelectedUnofferedKxGroup.into())
+                }
+                Err(KeyExchangeError::GetRandomFailed) => return Err(GetRandomFailed.into()),
+            };
 
         // 5b.
         let mut transcript = st.transcript;
-        emit_clientkx(&mut transcript, cx.common, &kx.pubkey);
+        emit_clientkx(&mut transcript, cx.common, kx.pub_key());
         // nb. EMS handshake hash only runs up to ClientKeyExchange.
         let ems_seed = st
             .using_ems
@@ -842,8 +846,8 @@ impl State<ClientConnectionData> for ExpectServerDone {
     }
 }
 
-struct ExpectNewTicket {
-    config: Arc<ClientConfig>,
+struct ExpectNewTicket<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     secrets: ConnectionSecrets,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
@@ -855,7 +859,7 @@ struct ExpectNewTicket {
     sig_verified: verify::HandshakeSignatureValid,
 }
 
-impl State<ClientConnectionData> for ExpectNewTicket {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectNewTicket<C> {
     fn handle(
         mut self: Box<Self>,
         _cx: &mut ClientContext<'_>,
@@ -886,8 +890,8 @@ impl State<ClientConnectionData> for ExpectNewTicket {
 }
 
 // -- Waiting for their CCS --
-struct ExpectCcs {
-    config: Arc<ClientConfig>,
+struct ExpectCcs<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     secrets: ConnectionSecrets,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
@@ -900,7 +904,7 @@ struct ExpectCcs {
     sig_verified: verify::HandshakeSignatureValid,
 }
 
-impl State<ClientConnectionData> for ExpectCcs {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCcs<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         match m.payload {
             MessagePayload::ChangeCipherSpec(..) => {}
@@ -936,8 +940,8 @@ impl State<ClientConnectionData> for ExpectCcs {
     }
 }
 
-struct ExpectFinished {
-    config: Arc<ClientConfig>,
+struct ExpectFinished<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls12ClientSessionValue>,
     session_id: SessionId,
     server_name: ServerName,
@@ -950,9 +954,9 @@ struct ExpectFinished {
     sig_verified: verify::HandshakeSignatureValid,
 }
 
-impl ExpectFinished {
+impl<C: CryptoProvider> ExpectFinished<C> {
     // -- Waiting for their finished --
-    fn save_session(&mut self, cx: &mut ClientContext<'_>) {
+    fn save_session(&mut self, cx: &ClientContext<'_>) {
         // Save a ticket.  If we got a new ticket, save that.  Otherwise, save the
         // original ticket again.
         let (mut ticket, lifetime) = match self.ticket.take() {
@@ -1001,7 +1005,7 @@ impl ExpectFinished {
     }
 }
 
-impl State<ClientConnectionData> for ExpectFinished {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectFinished<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let mut st = *self;
         let finished =
@@ -1015,13 +1019,15 @@ impl State<ClientConnectionData> for ExpectFinished {
 
         // Constant-time verification of this is relatively unimportant: they only
         // get one chance.  But it can't hurt.
-        let _fin_verified =
-            constant_time::verify_slices_are_equal(&expect_verify_data, &finished.0)
-                .map_err(|_| {
-                    cx.common
-                        .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError)
-                })
-                .map(|_| verify::FinishedMessageVerified::assertion())?;
+        let _fin_verified = match ConstantTimeEq::ct_eq(&expect_verify_data[..], &finished.0).into()
+        {
+            true => verify::FinishedMessageVerified::assertion(),
+            false => {
+                return Err(cx
+                    .common
+                    .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError));
+            }
+        };
 
         // Hash this message too.
         st.transcript.add_message(&m);

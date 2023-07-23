@@ -5,12 +5,12 @@ use crate::common_state::Protocol;
 use crate::common_state::Side;
 use crate::common_state::{CommonState, State};
 use crate::conn::ConnectionRandoms;
+use crate::crypto::{CryptoProvider, KeyExchange, SupportedGroup};
 use crate::enums::{
     AlertDescription, ContentType, HandshakeType, ProtocolVersion, SignatureScheme,
 };
 use crate::error::{Error, InvalidMessage, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
-use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
@@ -41,7 +41,7 @@ use crate::client::common::{ClientAuthDetails, ClientHelloDetails};
 use crate::client::{hs, ClientConfig, ClientSessionStore, ServerName};
 
 use crate::ticketer::TimeBase;
-use ring::constant_time;
+use subtle::ConstantTimeEq;
 
 use crate::sign::{CertifiedKey, Signer};
 use std::sync::Arc;
@@ -64,8 +64,8 @@ static DISALLOWED_TLS13_EXTS: &[ExtensionType] = &[
     ExtensionType::ExtendedMasterSecret,
 ];
 
-pub(super) fn handle_server_hello(
-    config: Arc<ClientConfig>,
+pub(super) fn handle_server_hello<C: CryptoProvider>(
+    config: Arc<ClientConfig<C>>,
     cx: &mut ClientContext,
     server_hello: &ServerHelloPayload,
     mut resuming_session: Option<persist::Tls13ClientSessionValue>,
@@ -75,7 +75,7 @@ pub(super) fn handle_server_hello(
     transcript: HandshakeHash,
     early_key_schedule: Option<KeyScheduleEarly>,
     hello: ClientHelloDetails,
-    our_key_share: kx::KeyExchange,
+    our_key_share: C::KeyExchange,
     mut sent_tls13_fake_ccs: bool,
 ) -> hs::NextStateOrError {
     validate_server_hello(cx.common, server_hello)?;
@@ -212,23 +212,29 @@ fn validate_server_hello(
     Ok(())
 }
 
-pub(super) fn initial_key_share(
-    config: &ClientConfig,
+pub(super) fn initial_key_share<C: CryptoProvider>(
+    config: &ClientConfig<C>,
     server_name: &ServerName,
-) -> Result<kx::KeyExchange, Error> {
+) -> Result<C::KeyExchange, Error> {
     let group = config
         .resumption
         .store
         .kx_hint(server_name)
-        .and_then(|group| kx::KeyExchange::choose(group, &config.kx_groups))
+        .and_then(|hint_group| {
+            config
+                .kx_groups
+                .iter()
+                .find(|kx_group| kx_group.name() == hint_group)
+        })
         .unwrap_or_else(|| {
             config
                 .kx_groups
                 .first()
                 .expect("No kx groups configured")
-        });
+        })
+        .name();
 
-    kx::KeyExchange::start(group).ok_or(Error::FailedToGetRandomBytes)
+    KeyExchange::start(group, &config.kx_groups).map_err(|_| Error::FailedToGetRandomBytes)
 }
 
 /// This implements the horrifying TLS1.3 hack where PSK binders have a
@@ -260,7 +266,7 @@ pub(super) fn fill_in_psk_binder(
 }
 
 pub(super) fn prepare_resumption(
-    config: &ClientConfig,
+    config: &ClientConfig<impl CryptoProvider>,
     cx: &mut ClientContext<'_>,
     resuming_session: &persist::Retrieved<&persist::Tls13ClientSessionValue>,
     exts: &mut Vec<ClientExtension>,
@@ -371,8 +377,8 @@ fn validate_encrypted_extensions(
     Ok(())
 }
 
-struct ExpectEncryptedExtensions {
-    config: Arc<ClientConfig>,
+struct ExpectEncryptedExtensions<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     resuming_session: Option<persist::Tls13ClientSessionValue>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
@@ -382,7 +388,7 @@ struct ExpectEncryptedExtensions {
     hello: ClientHelloDetails,
 }
 
-impl State<ClientConnectionData> for ExpectEncryptedExtensions {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectEncryptedExtensions<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let exts = require_handshake_msg!(
             m,
@@ -464,8 +470,8 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
     }
 }
 
-struct ExpectCertificateOrCertReq {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateOrCertReq<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
@@ -473,7 +479,7 @@ struct ExpectCertificateOrCertReq {
     key_schedule: KeyScheduleHandshake,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateOrCertReq<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         match m.payload {
             MessagePayload::Handshake {
@@ -524,8 +530,8 @@ impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
 // TLS1.3 version of CertificateRequest handling.  We then move to expecting the server
 // Certificate. Unfortunately the CertificateRequest type changed in an annoying way
 // in TLS1.3.
-struct ExpectCertificateRequest {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateRequest<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
@@ -533,7 +539,7 @@ struct ExpectCertificateRequest {
     key_schedule: KeyScheduleHandshake,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateRequest {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateRequest<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let certreq = &require_handshake_msg!(
             m,
@@ -593,8 +599,8 @@ impl State<ClientConnectionData> for ExpectCertificateRequest {
     }
 }
 
-struct ExpectCertificate {
-    config: Arc<ClientConfig>,
+struct ExpectCertificate<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
@@ -603,7 +609,7 @@ struct ExpectCertificate {
     client_auth: Option<ClientAuthDetails>,
 }
 
-impl State<ClientConnectionData> for ExpectCertificate {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificate<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let cert_chain = require_handshake_msg!(
             m,
@@ -646,8 +652,8 @@ impl State<ClientConnectionData> for ExpectCertificate {
 }
 
 // --- TLS1.3 CertificateVerify ---
-struct ExpectCertificateVerify {
-    config: Arc<ClientConfig>,
+struct ExpectCertificateVerify<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
@@ -657,7 +663,7 @@ struct ExpectCertificateVerify {
     client_auth: Option<ClientAuthDetails>,
 }
 
-impl State<ClientConnectionData> for ExpectCertificateVerify {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectCertificateVerify<C> {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let cert_verify = require_handshake_msg!(
             m,
@@ -826,8 +832,8 @@ fn emit_end_of_early_data_tls13(transcript: &mut HandshakeHash, common: &mut Com
     common.send_msg(m, true);
 }
 
-struct ExpectFinished {
-    config: Arc<ClientConfig>,
+struct ExpectFinished<C: CryptoProvider> {
+    config: Arc<ClientConfig<C>>,
     server_name: ServerName,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
@@ -838,7 +844,7 @@ struct ExpectFinished {
     sig_verified: verify::HandshakeSignatureValid,
 }
 
-impl State<ClientConnectionData> for ExpectFinished {
+impl<C: CryptoProvider> State<ClientConnectionData> for ExpectFinished<C> {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let mut st = *self;
         let finished =
@@ -849,12 +855,14 @@ impl State<ClientConnectionData> for ExpectFinished {
             .key_schedule
             .sign_server_finish(&handshake_hash);
 
-        let fin = constant_time::verify_slices_are_equal(expect_verify_data.as_ref(), &finished.0)
-            .map_err(|_| {
-                cx.common
-                    .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError)
-            })
-            .map(|_| verify::FinishedMessageVerified::assertion())?;
+        let fin = match ConstantTimeEq::ct_eq(expect_verify_data.as_ref(), &finished.0).into() {
+            true => verify::FinishedMessageVerified::assertion(),
+            false => {
+                return Err(cx
+                    .common
+                    .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError));
+            }
+        };
 
         st.transcript.add_message(&m);
 
