@@ -10,6 +10,7 @@ use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
+use crate::msgs::codec::Codec;
 use crate::msgs::enums::{Compression, ExtensionType};
 use crate::msgs::enums::{ECPointFormat, PSKKeyExchangeMode};
 use crate::msgs::handshake::ConvertProtocolNameList;
@@ -236,11 +237,6 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(key_share) = &key_share {
-        let fake_random = input.config.jls_config.
-        build_fake_random(input.random.0[0..16].try_into().unwrap(),
-        key_share.pubkey.as_ref());
-        input.random.0 = fake_random;
-
         debug_assert!(support_tls13);
         let key_share = KeyShareEntry::new(key_share.group(), key_share.pubkey.as_ref());
         exts.push(ClientExtension::KeyShare(vec![key_share]));
@@ -291,13 +287,24 @@ fn emit_client_hello_for_retry(
         typ: HandshakeType::ClientHello,
         payload: HandshakePayload::ClientHello(ClientHelloPayload {
             client_version: ProtocolVersion::TLSv1_2,
-            random: input.random,
+            random: Random([0u8;32]),
             session_id: input.session_id,
             cipher_suites,
             compression_methods: vec![Compression::Null],
             extensions: exts,
         }),
     };
+
+    //JLS fake random generation
+    let mut buf = Vec::<u8>::new();
+    chp.encode(&mut buf);
+    let fake_random = input.config.jls_config.
+    build_fake_random(input.random.0[0..16].try_into().unwrap(),
+    &buf);
+    input.random.0 = fake_random;
+    if let HandshakePayload::ClientHello(inner)= &mut chp.payload {
+        inner.random = input.random;
+    }
 
     let early_key_schedule = if let Some(resuming) = tls13_session {
         let schedule = tls13::fill_in_psk_binder(&resuming, &transcript_buffer, &mut chp);

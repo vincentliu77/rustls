@@ -15,9 +15,10 @@ use crate::kx;
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
 use crate::msgs::ccs::ChangeCipherSpecPayload;
+use crate::msgs::codec::Codec;
 use crate::msgs::enums::ExtensionType;
 use crate::msgs::enums::KeyUpdateRequest;
-use crate::msgs::handshake::NewSessionTicketPayloadTLS13;
+use crate::msgs::handshake::{NewSessionTicketPayloadTLS13, Random};
 use crate::msgs::handshake::{CertificateEntry, CertificatePayloadTLS13};
 use crate::msgs::handshake::{ClientExtension, ServerExtension};
 use crate::msgs::handshake::{HandshakeMessagePayload, HandshakePayload};
@@ -78,6 +79,32 @@ pub(super) fn handle_server_hello(
     our_key_share: kx::KeyExchange,
     mut sent_tls13_fake_ccs: bool,
 ) -> hs::NextStateOrError {
+    // JLS authentication
+    let server_hello_clone = ServerHelloPayload {
+        legacy_version: server_hello.legacy_version.clone(),
+        random: Random([0u8;32]),
+        session_id: server_hello.session_id.clone(),
+        cipher_suite: server_hello.cipher_suite.clone(),
+        compression_method: server_hello.compression_method.clone(),
+        extensions: server_hello.extensions.clone(),
+    };
+    let sh_hs = HandshakeMessagePayload {
+        typ: HandshakeType::ServerHello,
+        payload: HandshakePayload::ServerHello(server_hello_clone),
+    };
+    let mut buf = Vec::<u8>::new();
+    sh_hs.encode(&mut buf);
+    let is_jls = config.jls_config.check_fake_random(&randoms.server, 
+        &buf);
+    if is_jls {
+        debug!("JLS authencation success");
+        cx.common.jls_authed = Some(true);
+    }
+    else {
+        debug!("JLS authencation failed");
+        cx.common.jls_authed = Some(false);
+    }
+
     validate_server_hello(cx.common, server_hello)?;
 
     let their_key_share = server_hello
@@ -88,16 +115,7 @@ pub(super) fn handle_server_hello(
                 PeerMisbehaved::MissingKeyShare,
             )
         })?;
-    let is_jls = config.jls_config.check_fake_random(&randoms.server, 
-        their_key_share.payload.0.as_ref());
-    if is_jls {
-        debug!("JLS authencation success");
-        cx.common.jls_authed = Some(true);
-    }
-    else {
-        debug!("JLS authencation failed");
-        cx.common.jls_authed = Some(false);
-    }
+
     if our_key_share.group() != their_key_share.group {
         return Err({
             cx.common.send_fatal_alert(

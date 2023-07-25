@@ -188,8 +188,23 @@ mod client_hello {
             }
 
             //JLS authentication
+            let client_hello_clone = ClientHelloPayload {
+                client_version: client_hello.client_version.clone(),
+                random: Random([0u8;32]),
+                session_id: client_hello.session_id.clone(),
+                cipher_suites: client_hello.cipher_suites.clone(),
+                compression_methods: client_hello.compression_methods.clone(),
+                extensions: client_hello.extensions.clone(),
+            };
+            let ch_hs = HandshakeMessagePayload {
+                typ: HandshakeType::ClientHello,
+                payload: HandshakePayload::ClientHello(client_hello_clone),
+            };
+            let mut buf = Vec::<u8>::new();
+            ch_hs.encode(&mut buf);
+
             if self.config.jls_config.check_fake_random(&self.randoms.client,
-                 shares_ext[0].payload.0.as_ref()) {
+                 &buf) {
                 debug!("JLS client authenticated");
                 cx.common.jls_authed = Some(true);
             }
@@ -501,8 +516,6 @@ mod client_hello {
         let kx = kx::KeyExchange::choose(share.group, &config.kx_groups)
             .and_then(kx::KeyExchange::start)
             .ok_or(Error::FailedToGetRandomBytes)?;
-        let fake_random = config.jls_config
-        .build_fake_random(randoms.server[0..16].try_into().unwrap(), kx.pubkey.as_ref());
         let kse = KeyShareEntry::new(share.group, kx.pubkey.as_ref());
         extensions.push(ServerExtension::KeyShare(kse));
         extensions.push(ServerExtension::SupportedVersions(ProtocolVersion::TLSv1_3));
@@ -510,6 +523,23 @@ mod client_hello {
         if let Some(psk_idx) = chosen_psk_idx {
             extensions.push(ServerExtension::PresharedKey(psk_idx as u16));
         }
+
+        // JLS fake random generation
+        let sh_hs = HandshakeMessagePayload {
+            typ: HandshakeType::ServerHello,
+            payload: HandshakePayload::ServerHello(ServerHelloPayload {
+                legacy_version: ProtocolVersion::TLSv1_2,
+                random: Random([0u8;32]),
+                session_id: *session_id,
+                cipher_suite: suite.common.suite,
+                compression_method: Compression::Null,
+                extensions: extensions.clone(),
+            }),
+        };
+        let mut buf = Vec::<u8>::new();
+        sh_hs.encode(&mut buf);
+        let fake_random = config.jls_config
+        .build_fake_random(randoms.server[0..16].try_into().unwrap(),&buf);
 
         let sh = Message {
             version: ProtocolVersion::TLSv1_2,
