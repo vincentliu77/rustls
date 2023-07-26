@@ -1,11 +1,11 @@
 # Rustls-jls
 This is a fork of [Rustls](https://github.com/rustls/rustls) which implements the [JLS](https://github.com/JimmyHuang454/JLS) protocol.
 
-# Implement detail
+# Implementation detail
 - Use JLS v3 protocol to authenticate clienthello and servehello
 - The authentication result is stored in `jls_authed` variable. `Some(true)` for a successful authentication and `Some(false)` for 
 a failed authentication. `None` for not handshaking.
-- For a client, a successful authentication will skip certificates verification. A failed one will not and it regenerate to be a common tls connection.
+- For a client, a successful authentication will skip certificates verification. A failed one will not and it degenerate to be a normal tls connection.
 - For a server, authentication result makes no difference except `jls_authed` variable
 - No port forward is implemented since rustls makes no IO operation. It's better to implement in
 tokio-rustls.
