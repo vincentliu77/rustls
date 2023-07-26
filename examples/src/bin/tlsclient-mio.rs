@@ -344,6 +344,7 @@ mod danger {
             _end_entity: &rustls::Certificate,
             _intermediates: &[rustls::Certificate],
             _server_name: &rustls::ServerName,
+            _scts: &mut dyn Iterator<Item = &[u8]>,
             _ocsp: &[u8],
             _now: std::time::SystemTime,
         ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
@@ -416,7 +417,7 @@ fn make_config(args: &Args) -> Arc<rustls::ClientConfig> {
             let certs = load_certs(certs_file);
             let key = load_private_key(key_file);
             config
-                .with_single_cert(certs, key)
+                .with_client_auth_cert(certs, key)
                 .expect("invalid client auth certs/key")
         }
         (None, None) => config.with_no_client_auth(),

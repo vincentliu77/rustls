@@ -25,6 +25,8 @@
 //! * Extended master secret support ([RFC7627](https://tools.ietf.org/html/rfc7627)).
 //! * Exporters ([RFC5705](https://tools.ietf.org/html/rfc5705)).
 //! * OCSP stapling by servers.
+//! * SCT stapling by servers.
+//! * SCT verification by clients.
 //!
 //! ## Possible future features
 //!
@@ -261,7 +263,7 @@
 
 // Require docs for public APIs, deny unsafe code, etc.
 #![forbid(unsafe_code, unused_must_use)]
-#![cfg_attr(not(read_buf), forbid(unstable_features))]
+#![cfg_attr(not(any(read_buf, bench)), forbid(unstable_features))]
 #![deny(
     clippy::clone_on_ref_ptr,
     clippy::use_self,
@@ -301,6 +303,12 @@
 // is used to avoid needing `rustversion` to be compiled twice during
 // cross-compiling.
 #![cfg_attr(read_buf, feature(read_buf))]
+#![cfg_attr(bench, feature(test))]
+
+// Import `test` sysroot crate for `Bencher` definitions.
+#[cfg(bench)]
+#[allow(unused_extern_crates)]
+extern crate test;
 
 // log for logging (optional).
 #[cfg(feature = "logging")]
@@ -378,7 +386,10 @@ pub use crate::enums::{
     AlertDescription, CipherSuite, ContentType, HandshakeType, ProtocolVersion, SignatureAlgorithm,
     SignatureScheme,
 };
-pub use crate::error::{CertificateError, Error, InvalidMessage, PeerIncompatible, PeerMisbehaved};
+pub use crate::error::{
+    CertRevocationListError, CertificateError, Error, InvalidMessage, PeerIncompatible,
+    PeerMisbehaved,
+};
 pub use crate::key::{Certificate, PrivateKey};
 pub use crate::key_log::{KeyLog, NoKeyLog};
 pub use crate::key_log_file::KeyLogFile;
@@ -412,7 +423,7 @@ pub mod client {
     mod tls13;
 
     pub use crate::dns_name::InvalidDnsNameError;
-    pub use builder::WantsClientCert;
+    pub use builder::{WantsClientCert, WantsTransparencyPolicyOrClientCert};
     pub use client_conn::{
         ClientConfig, ClientConnection, ClientConnectionData, ClientSessionStore,
         ResolvesClientCert, Resumption, ServerName, Tls12Resumption, WriteEarlyData,
@@ -421,7 +432,9 @@ pub mod client {
 
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::verify::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
+        verify_server_cert_signed_by_trust_anchor, verify_server_name,
+        CertificateTransparencyPolicy, HandshakeSignatureValid, ServerCertVerified,
+        ServerCertVerifier, WebPkiVerifier,
     };
     #[cfg(feature = "dangerous_configuration")]
     pub use client_conn::danger::DangerousClientConfig;
@@ -445,6 +458,7 @@ pub mod server {
 
     pub use crate::verify::{
         AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
+        UnparsedCertRevocationList,
     };
     pub use builder::WantsServerCert;
     pub use handy::ResolvesServerCertUsingSni;
@@ -457,6 +471,8 @@ pub mod server {
 
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::dns_name::DnsName;
+    #[cfg(feature = "dangerous_configuration")]
+    pub use crate::key::ParsedCertificate;
     #[cfg(feature = "dangerous_configuration")]
     pub use crate::verify::{ClientCertVerified, ClientCertVerifier};
 }
