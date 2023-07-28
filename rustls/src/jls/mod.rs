@@ -1,13 +1,12 @@
-use crate::msgs::{message::{Message, MessagePayload}, handshake::{HandshakePayload, Random}};
 #[cfg(feature = "logging")]
-use crate::log::{debug, trace};
-use ring::digest::{digest, SHA512, SHA256};
+use crate::log::trace;
+use ring::digest::{digest, SHA256};
 
 // use aes_gcm to support 512bits long nonce (not supported by ring)
 use aes_gcm::{
     AesGcm, aes::Aes256,
     KeyInit,
-    aead::consts::U64, AeadInPlace // Or `Aes128Gcm`
+    aead::consts::U32, AeadInPlace // Or `Aes128Gcm`
 };
 
 
@@ -39,17 +38,18 @@ impl JlsConfig {
     }
 
     /// Build a fake random from a true random with given keyshare
-    pub fn build_fake_random(&self, random: &[u8;16], keyshare: &[u8]) -> [u8;32] {
+    pub fn build_fake_random(&self, random: &[u8;16], auth_data: &[u8]) -> [u8;32] {
         let mut iv = self.user_iv.as_bytes().to_vec();
-        iv.extend_from_slice(keyshare);
-        let pwd = self.user_pwd.as_bytes().to_vec();
+        iv.extend_from_slice(auth_data);
+        let mut pwd = self.user_pwd.as_bytes().to_vec();
+        pwd.extend_from_slice(auth_data);
 
-        let iv = digest(&SHA512, iv.as_ref());
+        let iv = digest(&SHA256, iv.as_ref());
         let pwd = digest(&SHA256, pwd.as_ref());
         trace!("ch iv: {:?}", iv.as_ref());
         trace!("pwd: {:?}", pwd.as_ref());
 
-        let cipher = AesGcm::<Aes256, U64>::new(pwd.as_ref().into());
+        let cipher = AesGcm::<Aes256, U32>::new(pwd.as_ref().into());
     
         let mut buffer = Vec::<u8>::from(random.as_slice());
         cipher.encrypt_in_place(iv.as_ref().into(), b"", & mut buffer).unwrap();
@@ -58,17 +58,18 @@ impl JlsConfig {
     }
     
     /// Check if it's a valid fake random 
-    pub fn check_fake_random(&self,fake_random: &[u8;32], keyshare: &[u8]) -> bool {
+    pub fn check_fake_random(&self,fake_random: &[u8;32], auth_data: &[u8]) -> bool {
         let mut iv = self.user_iv.as_bytes().to_vec();
-        iv.extend_from_slice(keyshare);
-        let pwd = self.user_pwd.as_bytes().to_vec();
+        iv.extend_from_slice(auth_data);
+        let mut pwd = self.user_pwd.as_bytes().to_vec();
+        pwd.extend_from_slice(auth_data);
 
-        let iv = digest(&SHA512, iv.as_ref());
+        let iv = digest(&SHA256, iv.as_ref());
         let pwd = digest(&SHA256, pwd.as_ref());
         trace!("ch iv: {:?}", iv.as_ref());
         trace!("pwd: {:?}", pwd.as_ref());
 
-        let cipher = AesGcm::<Aes256, U64>::new(pwd.as_ref().into());
+        let cipher = AesGcm::<Aes256, U32>::new(pwd.as_ref().into());
 
         let mut buffer = Vec::from(fake_random.as_ref());
 
