@@ -44,10 +44,11 @@ impl JlsConfig {
         let mut pwd = self.user_pwd.as_bytes().to_vec();
         pwd.extend_from_slice(auth_data);
 
+        trace!("generate ch iv: {:?}", iv);
+        trace!("generate pwd: {:?}", pwd);
+
         let iv = digest(&SHA256, iv.as_ref());
         let pwd = digest(&SHA256, pwd.as_ref());
-        trace!("ch iv: {:?}", iv.as_ref());
-        trace!("pwd: {:?}", pwd.as_ref());
 
         let cipher = AesGcm::<Aes256, U32>::new(pwd.as_ref().into());
     
@@ -64,10 +65,11 @@ impl JlsConfig {
         let mut pwd = self.user_pwd.as_bytes().to_vec();
         pwd.extend_from_slice(auth_data);
 
+        trace!("check ch iv: {:?}", iv);
+        trace!("check pwd: {:?}", pwd);
+
         let iv = digest(&SHA256, iv.as_ref());
         let pwd = digest(&SHA256, pwd.as_ref());
-        trace!("ch iv: {:?}", iv.as_ref());
-        trace!("pwd: {:?}", pwd.as_ref());
 
         let cipher = AesGcm::<Aes256, U32>::new(pwd.as_ref().into());
 
