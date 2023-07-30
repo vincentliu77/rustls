@@ -604,7 +604,8 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
     config.key_log = Arc::new(rustls::KeyLogFile::new());
     config.jls_config = JlsConfig::new("3070111071563328618171495819203123318",
     "3070111071563328618171495819203123318");
-
+    config.max_early_data_size = u32::MAX;
+    config.send_half_rtt_data = true;
     if args.flag_resumption {
         config.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
     }
