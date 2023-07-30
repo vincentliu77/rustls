@@ -188,14 +188,17 @@ mod client_hello {
             }
 
             //JLS authentication
-            let client_hello_clone = ClientHelloPayload {
+            let mut client_hello_clone = ClientHelloPayload {
                 client_version: client_hello.client_version.clone(),
                 random: Random([0u8;32]),
                 session_id: client_hello.session_id.clone(),
                 cipher_suites: client_hello.cipher_suites.clone(),
                 compression_methods: client_hello.compression_methods.clone(),
                 extensions: client_hello.extensions.clone(),
-            };
+            }; 
+            // PSK binders involves the calucaltion of hash of clienthello contradicting 
+            // with fake random generaton. Must be set zero.
+            crate::jls::set_zero_psk_binders(&mut client_hello_clone);
             let ch_hs = HandshakeMessagePayload {
                 typ: HandshakeType::ClientHello,
                 payload: HandshakePayload::ClientHello(client_hello_clone),

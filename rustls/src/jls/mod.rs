@@ -1,5 +1,6 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
+use crate::msgs::handshake::{ClientHelloPayload, ClientExtension};
 use ring::digest::{digest, SHA256};
 
 // use aes_gcm to support 512bits long nonce (not supported by ring)
@@ -77,5 +78,16 @@ impl JlsConfig {
 
         let is_valid = cipher.decrypt_in_place(iv.as_ref().into(), b"", & mut buffer).is_ok();
         is_valid
+    }
+}
+
+// fill zero in the psk binders field.
+pub(crate) fn set_zero_psk_binders(chp: &mut ClientHelloPayload) {
+    let last_extension = chp.extensions.last_mut();
+    if let Some(ClientExtension::PresharedKey(ref mut offer)) = last_extension {
+        for ii in 0..offer.binders.len() {
+            let len = offer.binders[ii].as_ref().len();
+            offer.binders[0] = vec![0u8;len].into();
+        }
     }
 }

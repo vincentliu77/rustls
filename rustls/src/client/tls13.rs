@@ -47,8 +47,6 @@ use ring::constant_time;
 use crate::sign::{CertifiedKey, Signer};
 use std::sync::Arc;
 
-use crate::jls;
-
 // Extensions we expect in plaintext in the ServerHello.
 static ALLOWED_PLAINTEXT_EXTS: &[ExtensionType] = &[
     ExtensionType::KeyShare,
