@@ -13,9 +13,9 @@ use aes_gcm::{
     KeyInit,
 };
 
-pub mod server;
+pub(crate) mod server;
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 /// JLS Configuration
 pub struct JlsConfig {
     /// user password of a JLS peer

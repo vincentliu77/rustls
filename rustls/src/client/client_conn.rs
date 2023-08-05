@@ -611,11 +611,6 @@ impl ClientConnection {
     pub fn extract_secrets(self) -> Result<ExtractedSecrets, Error> {
         self.inner.extract_secrets()
     }
-
-    /// Return Some(true) is a jls connection established, return None if not handshaked
-    pub fn is_jls(&self) -> Option<bool> {
-        self.inner.core.common_state.jls_authed
-    }
 }
 
 impl Deref for ClientConnection {

@@ -11,6 +11,7 @@ use crate::enums::ProtocolVersion;
 use crate::enums::{AlertDescription, ContentType, HandshakeType};
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
+use crate::jls::server::JlsForwardConn;
 use crate::key::Certificate;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
@@ -33,6 +34,7 @@ use crate::verify;
 use super::hs::{self, HandshakeHashOrBuffer, ServerContext};
 use super::server_conn::ServerConnectionData;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ring::constant_time;
@@ -41,12 +43,10 @@ pub(super) use client_hello::CompleteClientHelloHandling;
 
 mod client_hello {
     use crate::enums::SignatureScheme;
-    use crate::kx;
     use crate::msgs::base::{Payload, PayloadU8};
     use crate::msgs::ccs::ChangeCipherSpecPayload;
     use crate::msgs::enums::NamedGroup;
     use crate::msgs::enums::{Compression, PSKKeyExchangeMode};
-    use crate::msgs::handshake::CertReqExtension;
     use crate::msgs::handshake::CertificateEntry;
     use crate::msgs::handshake::CertificateExtension;
     use crate::msgs::handshake::CertificatePayloadTLS13;
@@ -60,12 +60,17 @@ mod client_hello {
     use crate::msgs::handshake::ServerExtension;
     use crate::msgs::handshake::ServerHelloPayload;
     use crate::msgs::handshake::SessionId;
+    use crate::msgs::handshake::{CertReqExtension, ConvertServerNameList};
+    use crate::msgs::message::PlainMessage;
     use crate::server::common::ActiveCertifiedKey;
-    use crate::sign;
     use crate::tls13::key_schedule::{
         KeyScheduleEarly, KeyScheduleHandshake, KeySchedulePreHandshake,
     };
+    use crate::vecbuf::ChunkVecBuffer;
     use crate::verify::DigitallySignedStruct;
+    use crate::version::TLS13;
+    use crate::{jls, kx};
+    use crate::{msgs, sign};
 
     use super::*;
 
@@ -190,30 +195,78 @@ mod client_hello {
             //JLS authentication
             let mut client_hello_clone = ClientHelloPayload {
                 client_version: client_hello.client_version.clone(),
-                random: Random([0u8;32]),
+                random: Random([0u8; 32]),
                 session_id: client_hello.session_id.clone(),
                 cipher_suites: client_hello.cipher_suites.clone(),
                 compression_methods: client_hello.compression_methods.clone(),
                 extensions: client_hello.extensions.clone(),
-            }; 
-            // PSK binders involves the calucaltion of hash of clienthello contradicting 
-            // with fake random generaton. Must be set zero.
+            };
+            // PSK binders involves the calucaltion of hash of clienthello contradicting
+            // with fake random generaton. Must be set zero before checking.
             crate::jls::set_zero_psk_binders(&mut client_hello_clone);
-            let ch_hs = HandshakeMessagePayload {
+            let mut ch_hs = HandshakeMessagePayload {
                 typ: HandshakeType::ClientHello,
                 payload: HandshakePayload::ClientHello(client_hello_clone),
             };
             let mut buf = Vec::<u8>::new();
             ch_hs.encode(&mut buf);
 
-            if self.config.jls_config.check_fake_random(&self.randoms.client,
-                 &buf) {
+            let server_name = client_hello
+                .get_sni_extension()
+                .map_or(None, |x| x.get_single_hostname());
+            let server_name = server_name.map(|x| x.as_ref().to_string());
+            let valid_name = if let Some(name) = &server_name {
+                self.config
+                    .jls_config
+                    .check_server_name(name)
+            } else {
+                false
+            };
+
+            if self
+                .config
+                .jls_config
+                .check_fake_random(&self.randoms.client, &buf)
+                && valid_name
+            {
                 debug!("JLS client authenticated");
                 cx.common.jls_authed = Some(true);
-            }
-            else {
-                debug!("JLS client authentication failed");
+            } else {
+                if valid_name {
+                    debug!("JLS client authentication failed: wrong pwd/iv");
+                } else {
+                    debug!("JLS client authentication failed: wrong server name");
+                }
+
                 cx.common.jls_authed = Some(false);
+                if let HandshakePayload::ClientHello(ch_ref) = &mut ch_hs.payload {
+                    ch_ref.extensions = client_hello.extensions.clone();
+                }
+                let msg = Message {
+                    version: chm.version,
+                    payload: MessagePayload::handshake(ch_hs),
+                };
+                let plain_msg = PlainMessage::from(msg);
+                let opa_msg = plain_msg
+                    .into_unencrypted_opaque()
+                    .encode();
+
+                let upstream_addr = server_name.map_or(None, |x| {
+                    self.config
+                        .jls_config
+                        .find_upstream(x.as_ref())
+                        .ok()
+                });
+                let mut chunk = ChunkVecBuffer::new(None);
+                chunk.append(opa_msg);
+                if let Some(addr) = upstream_addr {
+                    cx.data.jls_conn = Some(JlsForwardConn { from_upstream: Vec::new(), 
+                        to_upstream: chunk, upstream_addr: addr });
+                } else {
+                    panic!("Jls autentication failed but no upstream url available");
+                }
+
+                return Ok(Box::new(ExpectForward {}));
             }
 
             let early_data_requested = client_hello.early_data_extension_offered();
@@ -535,7 +588,7 @@ mod client_hello {
             typ: HandshakeType::ServerHello,
             payload: HandshakePayload::ServerHello(ServerHelloPayload {
                 legacy_version: ProtocolVersion::TLSv1_2,
-                random: Random([0u8;32]),
+                random: Random([0u8; 32]),
                 session_id: *session_id,
                 cipher_suite: suite.common.suite,
                 compression_method: Compression::Null,
@@ -544,8 +597,12 @@ mod client_hello {
         };
         let mut buf = Vec::<u8>::new();
         sh_hs.encode(&mut buf);
-        let fake_random = config.jls_config
-        .build_fake_random(randoms.server[0..16].try_into().unwrap(),&buf);
+        let fake_random = config.jls_config.build_fake_random(
+            randoms.server[0..16]
+                .try_into()
+                .unwrap(),
+            &buf,
+        );
 
         let sh = Message {
             version: ProtocolVersion::TLSv1_2,
@@ -1364,5 +1421,16 @@ impl State<ServerConnectionData> for ExpectQuicTraffic {
     ) -> Result<(), Error> {
         self.key_schedule
             .export_keying_material(output, label, context)
+    }
+}
+
+// JLS Forward
+struct ExpectForward {
+}
+impl ExpectForward {}
+
+impl State<ServerConnectionData> for ExpectForward {
+    fn handle(self: Box<Self>, cx: &mut ServerContext<'_>, m: Message) -> hs::NextStateOrError {
+        Err(crate::check::inappropriate_message(&m.payload, &[]))
     }
 }

@@ -24,7 +24,7 @@ pub struct MessageDeframer {
     /// Buffer of data read from the socket, in the process of being parsed into messages.
     ///
     /// For buffer size management, checkout out the `read()` method.
-    buf: Vec<u8>,
+    pub(crate) buf: Vec<u8>,
 
     /// If we're in the middle of joining a handshake payload, this is the metadata.
     joining_hs: Option<HandshakePayloadMeta>,

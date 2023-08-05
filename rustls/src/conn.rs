@@ -563,6 +563,11 @@ impl<Data> ConnectionCommon<Data> {
             rx: (record_layer.read_seq(), rx),
         })
     }
+
+    /// Return Some(true) is a jls connection established, return None if not handshaked
+    pub fn is_jls(&self) -> Option<bool> {
+        self.core.common_state.jls_authed
+    }
 }
 
 impl<'a, Data> From<&'a mut ConnectionCommon<Data>> for Context<'a, Data> {
@@ -619,7 +624,12 @@ impl<Data> ConnectionCore<Data> {
                 return Err(e);
             }
         };
-
+        // Tcp Forward
+        if self.common_state.jls_authed == Some(false)
+            && self.common_state.side == crate::Side::Server
+        {
+            return Ok(self.common_state.current_io_state());
+        }
         while let Some(msg) = self.deframe()? {
             match self.process_msg(msg, state) {
                 Ok(new) => state = new,

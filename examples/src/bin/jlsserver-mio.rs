@@ -20,7 +20,7 @@ use rustls::server::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth
 };
 
-use rustls::JlsConfig;
+use rustls::JlsServerConfig;
 use rustls::{self, RootCertStore};
 
 // Token for our listening socket.
@@ -602,8 +602,8 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
         .expect("bad certificates/private key");
 
     config.key_log = Arc::new(rustls::KeyLogFile::new());
-    config.jls_config = JlsConfig::new("3070111071563328618171495819203123318",
-    "3070111071563328618171495819203123318");
+    config.jls_config = JlsServerConfig::new("3070111071563328618171495819203123318",
+    "3070111071563328618171495819203123318","https://codepen.io:443").unwrap();
     config.max_early_data_size = u32::MAX;
     config.send_half_rtt_data = true;
     if args.flag_resumption {

@@ -1,70 +1,112 @@
-use std::{io, net::SocketAddr, ops::Deref, fmt::Display};
+use std::{fmt::Display, io, net::SocketAddr, ops::Deref};
 
 use regex::Regex;
 use url::Url;
 
-use crate::JlsConfig;
+use crate::{JlsConfig, vecbuf::ChunkVecBuffer};
 
-struct JlsServerConfig {
+#[derive(Clone, Debug, Default)]
+/// Jls Server Configuration
+pub struct JlsServerConfig {
     inner: JlsConfig,
-    upstream_url: Url,
+    upstream_url: Option<Url>,
     sni_proxy: Vec<(Regex, Url)>,
 }
 
 impl JlsServerConfig {
-
+    /// Create a new jls server configuration
     pub fn new(pwd: &str, iv: &str, upstream_addr: &str) -> Result<Self, url::ParseError> {
         let config = JlsServerConfig {
             inner: JlsConfig::new(pwd, iv),
-            upstream_url: Url::parse(upstream_addr)?,
+            upstream_url: Some(Url::parse(upstream_addr)?),
             sni_proxy: Vec::new(),
         };
         Ok(config)
     }
 
-    pub fn push_sni(&mut self, domain_name: &str, url: &str) -> Result<(), JlsParseError> {
-        let regx = Regex::new(domain_name).map_err(|x| JlsParseError::from(x))?;
+    /// push sni reverse proxy entry given domain name regex
+    pub fn push_sni(&mut self, domain_regex: &str, url: &str) -> Result<(), JlsParseError> {
+        let regx = Regex::new(domain_regex).map_err(|x| JlsParseError::from(x))?;
         let url = Url::parse(url).map_err(|x| JlsParseError::from(x))?;
         self.sni_proxy.push((regx, url));
         Ok(())
     }
 
-    pub fn get_upstream_addr(&self, server_name: &str) -> io::Result<SocketAddr> {
-        match self.upstream_url.domain() {
-            None => Self::to_sock_addr(&self.upstream_url),
-            Some(domain) => {
-                if domain == server_name {
-                    Self::to_sock_addr(&self.upstream_url)
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "client server name {} doesn't match upstream url {}",
-                            server_name, self.upstream_url
-                        ),
-                    ))
+    /// Verify server name and return destination addr
+    pub fn find_jls_upstream(&self, server_name: &str) -> io::Result<SocketAddr> {
+        if let Some(url) = &self.upstream_url {
+            match url.domain() {
+                None => Self::to_sock_addr(url),
+                Some(domain) => {
+                    if domain == server_name {
+                        Self::to_sock_addr(url)
+                    } else {
+                        Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "client server name {} doesn't match upstream url {}",
+                                server_name, url
+                            ),
+                        ))
+                    }
                 }
             }
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("empty jls upstream"),
+            ))
         }
     }
 
+    /// Skip client servername verification, return upstream_url directly
+    pub fn get_jls_upstream(&self) -> io::Result<SocketAddr> {
+        if let Some(url) = &self.upstream_url {
+            Self::to_sock_addr(url)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("empty jls upstream"),
+            ))
+        }
+    }
+
+    /// Verify whether client server name match upstream url
     pub(crate) fn check_server_name(&self, server_name: &str) -> bool {
-        match self.upstream_url.domain() {
-            None => true,
-            Some(domain) => domain == server_name,
+        if let Some(url) = &self.upstream_url {
+            match url.domain() {
+                None => {
+                    log::trace!("No domain in upstream url");
+                    true
+                },
+                Some(domain) => {
+                    log::trace!("compare server name {} with {}",server_name,domain);
+                    domain == server_name
+                },
+            }
+        } else {
+            log::trace!("upstream url not found");
+            return false;
         }
     }
 
-    pub(crate) fn find_upstream(&self, domain_name: &str) -> io::Result<SocketAddr> {
-        for (regx, upstream) in self.sni_proxy {
+    /// Find reverse proxy destination given domain name
+    pub(crate) fn find_proxy_upstream(&self, domain_name: &str) -> io::Result<SocketAddr> {
+        for (regx, upstream) in self.sni_proxy.iter() {
             if regx.is_match(domain_name) {
-                return Self::to_sock_addr(&upstream);
+                return Self::to_sock_addr(upstream);
             }
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("failed to find reverse proxy entry"),
         ))
+    }
+
+    /// Search domain name in the reverse proxy list, return upstream if not found
+    pub fn find_upstream(&self, domain_name: &str) -> io::Result<SocketAddr> {
+        self.find_proxy_upstream(domain_name)
+            .or(self.get_jls_upstream())
     }
 
     fn to_sock_addr(url: &Url) -> io::Result<SocketAddr> {
@@ -110,4 +152,10 @@ impl From<regex::Error> for JlsParseError {
     fn from(regx_err: regex::Error) -> Self {
         JlsParseError::RegexError(regx_err.to_string())
     }
+}
+
+pub(crate) struct JlsForwardConn {
+    pub(crate) from_upstream: Vec<u8>,
+    pub(crate) to_upstream: ChunkVecBuffer,
+    pub(crate) upstream_addr: SocketAddr,
 }

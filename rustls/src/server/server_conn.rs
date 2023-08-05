@@ -4,7 +4,7 @@ use crate::conn::{ConnectionCommon, ConnectionCore};
 use crate::dns_name::DnsName;
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::jls::JlsConfig;
+use crate::jls::server::{JlsServerConfig, JlsForwardConn};
 use crate::kx::SupportedKxGroup;
 #[cfg(feature = "logging")]
 use crate::log::trace;
@@ -299,7 +299,7 @@ pub struct ServerConfig {
     pub send_tls13_tickets: usize,
 
     /// JLS server configuration
-    pub jls_config: JlsConfig,
+    pub jls_config: JlsServerConfig,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -461,6 +461,32 @@ impl ServerConnection {
     pub fn extract_secrets(self) -> Result<ExtractedSecrets, Error> {
         self.inner.extract_secrets()
     }
+
+    /// Read data from upstream to forward
+    pub fn read_upstream(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
+        if let Some(conn) = &mut self.inner.core.data.jls_conn {
+            let mut buf = Vec::new();
+            let ret_val = rd.read(&mut buf);
+            self.inner.sendable_tls.append(buf);
+            ret_val
+        }
+        else {
+            Ok(0)
+        }
+    }
+
+    /// Write data to upstream for forward
+    pub fn write_upstream(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error> {
+        if let Some(conn) = &mut self.inner.core.data.jls_conn {
+            let buf = self.inner.core.message_deframer.buf.split_off(0);
+            conn.to_upstream.append(buf);
+            conn.to_upstream.write_to(wr)
+        }
+        else {
+            Ok(0)
+        }
+    }
+
 }
 
 impl fmt::Debug for ServerConnection {
@@ -798,6 +824,7 @@ pub struct ServerConnectionData {
     pub(super) received_resumption_data: Option<Vec<u8>>,
     pub(super) resumption_data: Vec<u8>,
     pub(super) early_data: EarlyDataState,
+    pub(super) jls_conn: Option<JlsForwardConn>
 }
 
 impl ServerConnectionData {
