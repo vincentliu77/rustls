@@ -5,12 +5,12 @@ use std::net::TcpStream;
 
 use rustls::{OwnedTrustAnchor, RootCertStore};
 
-fn start_connection(config: &Arc<rustls::ClientConfig>, domain_name: &str) {
+fn start_connection(config: &Arc<rustls::ClientConfig>, domain_name: &str,ip:&str) {
     let server_name = domain_name
         .try_into()
         .expect("invalid DNS name");
     let mut conn = rustls::ClientConnection::new(Arc::clone(config), server_name).unwrap();
-    let mut sock = TcpStream::connect(format!("{}:4443", domain_name)).unwrap();
+    let mut sock = TcpStream::connect(format!("{}", ip)).unwrap();
     sock.set_nodelay(true).unwrap();
     let request = format!(
         "GET / HTTP/1.1\r\n\
@@ -84,7 +84,8 @@ fn main() {
     // second will use early data if the server supports it.
 
     println!("* Sending first request:");
-    start_connection(&config, "localhost");
+    start_connection(&config, "codepen.io","104.17.14.48:443");
     println!("* Sending second request:");
-    start_connection(&config, "localhost");
+    start_connection(&config, "codepen.io","104.16.176.44:443");
+
 }
