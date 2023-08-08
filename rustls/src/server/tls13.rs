@@ -265,6 +265,9 @@ mod client_hello {
                 } else {
                     panic!("Jls autentication failed but no upstream url available");
                 }
+                // End handshaking, start forward traffic
+                cx.common.may_send_application_data = true;
+                cx.common.may_receive_application_data = true;
 
                 return Ok(Box::new(ExpectForward {}));
             }
