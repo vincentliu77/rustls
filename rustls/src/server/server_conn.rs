@@ -4,7 +4,7 @@ use crate::conn::{ConnectionCommon, ConnectionCore};
 use crate::dns_name::DnsName;
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::jls::server::{JlsServerConfig, JlsForwardConn};
+use crate::jls::server::{JlsForwardConn, JlsServerConfig};
 use crate::kx::SupportedKxGroup;
 #[cfg(feature = "logging")]
 use crate::log::trace;
@@ -469,29 +469,61 @@ impl ServerConnection {
             let ret_val = rd.read(&mut buf);
             self.inner.sendable_tls.append(buf);
             ret_val
-        }
-        else {
+        } else {
             Ok(0)
         }
     }
 
+    /// Whether the  write buffer is empty
+    pub fn wants_write_upstream(&self) -> bool {
+        if let Some(conn) = &self.inner.core.data.jls_conn {
+            !self
+                .inner
+                .core
+                .message_deframer
+                .buf
+                .is_empty()
+                || !conn.to_upstream.is_empty()
+        } else {
+            false
+        }
+    }
     /// Write data to upstream for forward
     pub fn write_upstream(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error> {
         if let Some(conn) = &mut self.inner.core.data.jls_conn {
-            let buf = self.inner.core.message_deframer.buf.split_off(0);
-            conn.to_upstream.append(buf);
-            conn.to_upstream.write_to(wr)
-        }
-        else {
+            let buf = self
+                .inner
+                .core
+                .message_deframer
+                .buf
+                .split_off(0);
+            if !buf.is_empty() {
+                conn.to_upstream.append(buf);
+            }
+            if !conn.to_upstream.is_empty() {
+                return conn.to_upstream.write_to(wr);
+            }
+            Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "Nothing to write to upstream",
+            ))
+        } else {
             Ok(0)
         }
     }
-    
+
     /// Get upstream address
     pub fn get_upstream_addr(&self) -> Option<std::net::SocketAddr> {
-        Some(self.inner.core.data.jls_conn.as_ref()?.upstream_addr.clone())
+        Some(
+            self.inner
+                .core
+                .data
+                .jls_conn
+                .as_ref()?
+                .upstream_addr
+                .clone(),
+        )
     }
-
 }
 
 impl fmt::Debug for ServerConnection {
@@ -829,7 +861,7 @@ pub struct ServerConnectionData {
     pub(super) received_resumption_data: Option<Vec<u8>>,
     pub(super) resumption_data: Vec<u8>,
     pub(super) early_data: EarlyDataState,
-    pub(super) jls_conn: Option<JlsForwardConn>
+    pub(super) jls_conn: Option<JlsForwardConn>,
 }
 
 impl ServerConnectionData {
