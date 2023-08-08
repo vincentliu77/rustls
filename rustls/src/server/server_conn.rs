@@ -486,6 +486,11 @@ impl ServerConnection {
             Ok(0)
         }
     }
+    
+    /// Get upstream address
+    pub fn get_upstream_addr(&self) -> Option<std::net::SocketAddr> {
+        Some(self.inner.core.data.jls_conn.as_ref()?.upstream_addr.clone())
+    }
 
 }
 
