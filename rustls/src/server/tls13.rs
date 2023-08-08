@@ -240,6 +240,7 @@ mod client_hello {
 
                 cx.common.jls_authed = Some(false);
                 if let HandshakePayload::ClientHello(ch_ref) = &mut ch_hs.payload {
+                    ch_ref.random = Random(self.randoms.client);
                     ch_ref.extensions = client_hello.extensions.clone();
                 }
                 let msg = Message {
