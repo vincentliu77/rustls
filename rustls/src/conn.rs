@@ -617,6 +617,12 @@ impl<Data> ConnectionCore<Data> {
     }
 
     pub(crate) fn process_new_packets(&mut self) -> Result<IoState, Error> {
+        // Tcp Forward
+        if self.common_state.jls_authed == Some(false)
+            && self.common_state.side == crate::Side::Server
+        {
+            return Ok(self.common_state.current_io_state());
+        }
         let mut state = match mem::replace(&mut self.state, Err(Error::HandshakeNotComplete)) {
             Ok(state) => state,
             Err(e) => {
@@ -624,12 +630,7 @@ impl<Data> ConnectionCore<Data> {
                 return Err(e);
             }
         };
-        // Tcp Forward
-        if self.common_state.jls_authed == Some(false)
-            && self.common_state.side == crate::Side::Server
-        {
-            return Ok(self.common_state.current_io_state());
-        }
+
         while let Some(msg) = self.deframe()? {
             match self.process_msg(msg, state) {
                 Ok(new) => state = new,

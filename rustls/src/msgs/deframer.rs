@@ -24,7 +24,7 @@ pub struct MessageDeframer {
     /// Buffer of data read from the socket, in the process of being parsed into messages.
     ///
     /// For buffer size management, checkout out the `read()` method.
-    pub(crate) buf: Vec<u8>,
+    buf: Vec<u8>,
 
     /// If we're in the middle of joining a handshake payload, this is the metadata.
     joining_hs: Option<HandshakePayloadMeta>,
@@ -353,6 +353,13 @@ impl MessageDeframer {
             self.used = 0;
         }
     }
+
+    /// Pop all the elements of the buf. For jls forward
+    pub fn pop_all(&mut self) -> Vec<u8> {
+        let ret = self.buf[0..self.used].to_vec();
+        self.used = 0;
+        ret
+    } 
 }
 
 enum HandshakePayloadState {

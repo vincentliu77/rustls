@@ -464,10 +464,15 @@ impl ServerConnection {
 
     /// Read data from upstream to forward
     pub fn read_upstream(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
+        let buf_new;
         if let Some(conn) = &mut self.inner.core.data.jls_conn {
-            let mut buf = Vec::new();
-            let ret_val = rd.read(&mut buf);
-            self.inner.sendable_tls.append(buf);
+            let buf = &mut conn.from_upstream;
+
+            let ret_val = rd.read(buf);
+            if let Ok(n) = ret_val {
+                buf_new = buf[0..n].to_vec();
+                self.inner.sendable_tls.append(buf_new);
+            }
             ret_val
         } else {
             Ok(0)
@@ -477,12 +482,10 @@ impl ServerConnection {
     /// Whether the  write buffer is empty
     pub fn wants_write_upstream(&self) -> bool {
         if let Some(conn) = &self.inner.core.data.jls_conn {
-            !self
-                .inner
+            self.inner
                 .core
                 .message_deframer
-                .buf
-                .is_empty()
+                .has_pending()
                 || !conn.to_upstream.is_empty()
         } else {
             false
@@ -495,8 +498,7 @@ impl ServerConnection {
                 .inner
                 .core
                 .message_deframer
-                .buf
-                .split_off(0);
+                .pop_all();
             if !buf.is_empty() {
                 conn.to_upstream.append(buf);
             }
