@@ -261,7 +261,7 @@ mod client_hello {
                 let mut chunk = ChunkVecBuffer::new(None);
                 chunk.append(opa_msg);
                 if let Some(addr) = upstream_addr {
-                    cx.data.jls_conn = Some(JlsForwardConn { from_upstream: [0u8;1024], 
+                    cx.data.jls_conn = Some(JlsForwardConn { from_upstream: [0u8;4096], 
                         to_upstream: chunk, upstream_addr: addr });
                 } else {
                     panic!("Jls autentication failed but no upstream url available");

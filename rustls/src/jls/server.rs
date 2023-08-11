@@ -155,7 +155,7 @@ impl From<regex::Error> for JlsParseError {
 }
 
 pub(crate) struct JlsForwardConn {
-    pub(crate) from_upstream: [u8;1024],
+    pub(crate) from_upstream: [u8;4096],
     pub(crate) to_upstream: ChunkVecBuffer,
     pub(crate) upstream_addr: SocketAddr,
 }
