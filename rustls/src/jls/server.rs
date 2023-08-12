@@ -3,7 +3,10 @@ use std::{fmt::Display, io, net::SocketAddr, ops::Deref};
 use regex::Regex;
 use url::Url;
 
-use crate::{JlsConfig, vecbuf::ChunkVecBuffer};
+use crate::{vecbuf::ChunkVecBuffer, JlsConfig};
+
+#[cfg(feature = "logging")]
+use log::trace;
 
 #[derive(Clone, Debug, Default)]
 /// Jls Server Configuration
@@ -76,16 +79,16 @@ impl JlsServerConfig {
         if let Some(url) = &self.upstream_url {
             match url.domain() {
                 None => {
-                    log::trace!("No domain in upstream url");
+                    trace!("No domain in upstream url");
                     true
-                },
+                }
                 Some(domain) => {
-                    log::trace!("compare server name {} with {}",server_name,domain);
+                    trace!("compare server name {} with {}", server_name, domain);
                     domain == server_name
-                },
+                }
             }
         } else {
-            log::trace!("upstream url not found");
+            trace!("upstream url not found");
             return false;
         }
     }
@@ -155,7 +158,7 @@ impl From<regex::Error> for JlsParseError {
 }
 
 pub(crate) struct JlsForwardConn {
-    pub(crate) from_upstream: [u8;4096],
+    pub(crate) from_upstream: [u8; 4096],
     pub(crate) to_upstream: ChunkVecBuffer,
     pub(crate) upstream_addr: SocketAddr,
 }

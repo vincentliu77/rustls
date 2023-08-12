@@ -11,7 +11,6 @@ use crate::enums::ProtocolVersion;
 use crate::enums::{AlertDescription, ContentType, HandshakeType};
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
-use crate::jls::server::JlsForwardConn;
 use crate::key::Certificate;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
@@ -34,7 +33,6 @@ use crate::verify;
 use super::hs::{self, HandshakeHashOrBuffer, ServerContext};
 use super::server_conn::ServerConnectionData;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ring::constant_time;
@@ -43,6 +41,7 @@ pub(super) use client_hello::CompleteClientHelloHandling;
 
 mod client_hello {
     use crate::enums::SignatureScheme;
+    use crate::kx;
     use crate::msgs::base::{Payload, PayloadU8};
     use crate::msgs::ccs::ChangeCipherSpecPayload;
     use crate::msgs::enums::NamedGroup;
@@ -60,17 +59,15 @@ mod client_hello {
     use crate::msgs::handshake::ServerExtension;
     use crate::msgs::handshake::ServerHelloPayload;
     use crate::msgs::handshake::SessionId;
-    use crate::msgs::handshake::{CertReqExtension, ConvertServerNameList};
-    use crate::msgs::message::PlainMessage;
+    use crate::msgs::handshake::CertReqExtension;
     use crate::server::common::ActiveCertifiedKey;
     use crate::tls13::key_schedule::{
         KeyScheduleEarly, KeyScheduleHandshake, KeySchedulePreHandshake,
     };
-    use crate::vecbuf::ChunkVecBuffer;
     use crate::verify::DigitallySignedStruct;
-    use crate::version::TLS13;
-    use crate::{jls, kx};
-    use crate::{msgs, sign};
+    use crate::sign;
+
+    use crate::server::jls;
 
     use super::*;
 
@@ -193,93 +190,14 @@ mod client_hello {
             }
 
             //JLS authentication
-            let mut client_hello_clone = ClientHelloPayload {
-                client_version: client_hello.client_version.clone(),
-                random: Random([0u8; 32]),
-                session_id: client_hello.session_id.clone(),
-                cipher_suites: client_hello.cipher_suites.clone(),
-                compression_methods: client_hello.compression_methods.clone(),
-                extensions: client_hello.extensions.clone(),
-            };
-            // PSK binders involves the calucaltion of hash of clienthello contradicting
-            // with fake random generaton. Must be set zero before checking.
-            crate::jls::set_zero_psk_binders(&mut client_hello_clone);
-            let mut ch_hs = HandshakeMessagePayload {
-                typ: HandshakeType::ClientHello,
-                payload: HandshakePayload::ClientHello(client_hello_clone),
-            };
-            let mut buf = Vec::<u8>::new();
-            ch_hs.encode(&mut buf);
-
-            let server_name = client_hello
-                .get_sni_extension()
-                .map_or(None, |x| x.get_single_hostname());
-            let server_name = server_name.map(|x| x.as_ref().to_string());
-            let valid_name = if let Some(name) = &server_name {
-                self.config
-                    .jls_config
-                    .check_server_name(name)
-            } else {
-                false
-            };
-
-            if self
-                .config
-                .jls_config
-                .check_fake_random(&self.randoms.client, &buf)
-                && valid_name
-            {
-                debug!("JLS client authenticated");
-                cx.common.jls_authed = Some(true);
-            } else {
-                if valid_name {
-                    debug!("JLS client authentication failed: wrong pwd/iv");
-                } else {
-                    debug!("JLS client authentication failed: wrong server name");
-                }
-
-                cx.common.jls_authed = Some(false);
-                if let HandshakePayload::ClientHello(ch_ref) = &mut ch_hs.payload {
-                    ch_ref.random = Random(self.randoms.client);
-                    ch_ref.extensions = client_hello.extensions.clone();
-                }
-                let msg = Message {
-                    version: chm.version,
-                    payload: MessagePayload::handshake(ch_hs),
-                };
-                let plain_msg = PlainMessage::from(msg);
-                let opa_msg = plain_msg
-                    .into_unencrypted_opaque()
-                    .encode();
-
-                let upstream_addr = server_name.map_or(
-                    self.config
-                        .jls_config
-                        .get_jls_upstream()
-                        .ok(),
-                    |x| {
-                        self.config
-                            .jls_config
-                            .find_upstream(x.as_ref())
-                            .ok()
-                    },
-                );
-                let mut chunk = ChunkVecBuffer::new(None);
-                chunk.append(opa_msg);
-                if let Some(addr) = upstream_addr {
-                    cx.data.jls_conn = Some(JlsForwardConn {
-                        from_upstream: [0u8; 4096],
-                        to_upstream: chunk,
-                        upstream_addr: addr,
-                    });
-                } else {
-                    panic!("Jls autentication failed but no upstream url available");
-                }
-                // End handshaking, start forward traffic
-                cx.common.may_send_application_data = true;
-                cx.common.may_receive_application_data = true;
-
-                return Ok(Box::new(ExpectForward {}));
+            if !jls::handle_client_hello_tls13(
+                &self.config.jls_config,
+                cx,
+                client_hello,
+                chm,
+                &mut self.randoms,
+            ) {
+                return Ok(Box::new(jls::ExpectForward {}));
             }
 
             let early_data_requested = client_hello.early_data_extension_offered();
@@ -1437,12 +1355,3 @@ impl State<ServerConnectionData> for ExpectQuicTraffic {
     }
 }
 
-// JLS Forward
-struct ExpectForward {}
-impl ExpectForward {}
-
-impl State<ServerConnectionData> for ExpectForward {
-    fn handle(self: Box<Self>, cx: &mut ServerContext<'_>, m: Message) -> hs::NextStateOrError {
-        Err(crate::check::inappropriate_message(&m.payload, &[]))
-    }
-}

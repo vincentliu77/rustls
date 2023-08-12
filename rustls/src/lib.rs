@@ -455,6 +455,7 @@ pub mod server {
     #[cfg(feature = "tls12")]
     mod tls12;
     mod tls13;
+    mod jls;
 
     pub use crate::verify::{
         AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
