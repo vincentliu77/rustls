@@ -263,6 +263,14 @@ impl ServerConnection {
     pub fn server_name(&self) -> Option<&str> {
         self.inner.core.get_sni_str()
     }
+
+    /// Get upstream address
+    pub fn get_upstream_addr(&self) -> Option<std::net::SocketAddr> {
+        self.inner
+            .core
+            .data
+            .get_jls_upstream_addr()
+    }
 }
 
 impl Deref for ServerConnection {

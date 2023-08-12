@@ -516,15 +516,10 @@ impl ServerConnection {
 
     /// Get upstream address
     pub fn get_upstream_addr(&self) -> Option<std::net::SocketAddr> {
-        Some(
-            self.inner
-                .core
-                .data
-                .jls_conn
-                .as_ref()?
-                .upstream_addr
-                .clone(),
-        )
+        self.inner
+            .core
+            .data
+            .get_jls_upstream_addr()
     }
 }
 
@@ -869,6 +864,10 @@ pub struct ServerConnectionData {
 impl ServerConnectionData {
     pub(super) fn get_sni_str(&self) -> Option<&str> {
         self.sni.as_ref().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn get_jls_upstream_addr(&self) -> Option<std::net::SocketAddr> {
+        Some(self.jls_conn.as_ref()?.upstream_addr)
     }
 }
 
