@@ -25,7 +25,7 @@ url = "2.4.0"
 webpki = { package = "rustls-webpki", version = "0.101.0", features = ["alloc", "std"] }
 
 [features]
-default = ["logging"]
+default = ["logging", "tls12"]
 logging = ["log"]
 dangerous_configuration = []
 secret_extraction = []

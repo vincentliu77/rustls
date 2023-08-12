@@ -40,6 +40,7 @@ mod client_hello {
     use crate::msgs::handshake::{ClientExtension, SessionId};
     use crate::msgs::handshake::{ClientHelloPayload, ServerHelloPayload};
     use crate::msgs::handshake::{ServerExtension, ServerKeyExchangePayload};
+    use crate::server::jls::{handle_client_hello_tls12, ExpectForward};
     use crate::sign;
     use crate::verify::DigitallySignedStruct;
 
@@ -66,6 +67,11 @@ mod client_hello {
             sigschemes_ext: Vec<SignatureScheme>,
             tls13_enabled: bool,
         ) -> hs::NextStateOrError {
+            // Jls Forward
+            if !handle_client_hello_tls12(&self.config.jls_config, 
+                cx, client_hello, chm, &mut self.randoms) {
+                    return Ok(Box::new(ExpectForward{}));
+                }
             // -- TLS1.2 only from hereon in --
             self.transcript.add_message(chm);
 
