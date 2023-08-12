@@ -252,17 +252,26 @@ mod client_hello {
                     .into_unencrypted_opaque()
                     .encode();
 
-                let upstream_addr = server_name.map_or(None, |x| {
+                let upstream_addr = server_name.map_or(
                     self.config
                         .jls_config
-                        .find_upstream(x.as_ref())
-                        .ok()
-                });
+                        .get_jls_upstream()
+                        .ok(),
+                    |x| {
+                        self.config
+                            .jls_config
+                            .find_upstream(x.as_ref())
+                            .ok()
+                    },
+                );
                 let mut chunk = ChunkVecBuffer::new(None);
                 chunk.append(opa_msg);
                 if let Some(addr) = upstream_addr {
-                    cx.data.jls_conn = Some(JlsForwardConn { from_upstream: [0u8;4096], 
-                        to_upstream: chunk, upstream_addr: addr });
+                    cx.data.jls_conn = Some(JlsForwardConn {
+                        from_upstream: [0u8; 4096],
+                        to_upstream: chunk,
+                        upstream_addr: addr,
+                    });
                 } else {
                     panic!("Jls autentication failed but no upstream url available");
                 }
@@ -1429,8 +1438,7 @@ impl State<ServerConnectionData> for ExpectQuicTraffic {
 }
 
 // JLS Forward
-struct ExpectForward {
-}
+struct ExpectForward {}
 impl ExpectForward {}
 
 impl State<ServerConnectionData> for ExpectForward {
